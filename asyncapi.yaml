@@ -1,0 +1,2006 @@
+asyncapi: 3.0.0
+id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
+
+info:
+  title: Reserva de Salas · Protocolo de Mensagens
+  version: 2.0.0
+  description: |
+    Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
+    (Sistemas Distribuídosprotocolo-mermaid.md · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
+    Responsáveis pelo protocolo: Pedro Silveira e Daniel Jesus.
+
+    Este documento descreve o **servidor**: cada operação é uma mensagem que ele **recebe** do cliente (C → S)
+    e a **resposta** que devolve (S → C) na mesma conexão. Reconstruído a partir da planilha
+    *Protocolo de troca de Mensagens* v2.0.
+
+    ## 1. Transporte e formato
+
+    | # | Regra | Valor |
+    |---|---|---|
+    | 1.1 | Arquitetura | Cliente/servidor com troca de mensagens via sockets. Uma thread por conexão. |
+    | 1.2 | Transporte | TCP. O servidor tem campo para a porta de escuta; o cliente, campos para IP e porta. |
+    | 1.3 | Codificação | UTF-8 nos dois lados. |
+    | 1.4 | Formato | 1 mensagem = 1 objeto JSON em **linha única** (sem quebras de linha internas, sem indentação). |
+    | 1.5 | Framing | Toda mensagem termina com LF (`\n`). O receptor lê até o `\n`. |
+    | 1.6 | Tamanho máximo | 8192 bytes, já incluindo o `\n`. Acima disso a mensagem é descartada e respondida com 400. |
+    | 1.7 | Interação | Requisição/resposta: toda requisição gera **exatamente uma** resposta, na mesma conexão. |
+    | 1.8 | Nome da resposta | `op` da resposta = `op` da requisição + `_response` (ex.: `login` → `login_response`). |
+    | 1.9 | Conexão | Mantida durante a sessão. Com 300 s de inatividade o servidor fecha a conexão, mas **não** invalida o token. |
+    | 1.10 | Ordem dos campos | Irrelevante: o receptor nunca depende da ordem das chaves. |
+
+    ## 2. Regras das chaves
+
+    - **2.1** Toda mensagem (requisição e resposta) tem `op`; o emissor a escreve como primeira chave.
+    - **2.2** Chaves em inglês, `snake_case`, minúsculas, sem acentos. `op` e nomes de chaves são case-sensitive (2.12).
+    - **2.3** **Todos os valores são strings**, inclusive números, booleanos e datas (`"capacity": "12"`, `"available": "true"`).
+    - **2.4** Listas são arrays JSON de objetos cujos valores também são strings (`"rooms": [ {…}, {…} ]`).
+    - **2.5** Toda requisição envia `token`, exceto `register` e `login`.
+    - **2.6 / 2.7** Toda resposta tem no mínimo `op`, `status` e `message`; `status` é o código numérico como string (`"200"`).
+    - **2.8** `message` em português, sem acentos e sem emojis, **exatamente** como definido em cada operação.
+    - **2.9** Campos desconhecidos são ignorados (interoperabilidade entre grupos).
+    - **2.10** Campo obrigatório ausente, `null` ou de tipo diferente de string → 400.
+    - **2.11** `""` em atualização significa **não alterar**; em criação é inválido (400).
+    - **2.12** `user` e `email` são sempre gravados em minúsculas.
+
+    ## 3. Autenticação, token e perfis
+
+    - **3.1** O token é gerado no login: 64 caracteres hexadecimais minúsculos (`^[a-f0-9]{64}$`).
+    - **3.2** O servidor grava o token no banco, associado ao usuário; o cliente o guarda em memória durante a sessão.
+    - **3.3** Validade: 30 min sem uso; cada requisição válida renova a contagem. Token expirado → 401.
+    - **3.4** O logout invalida o token; um token invalidado nunca é reutilizado.
+    - **3.5** Sessão única: novo login com sessão ativa → 409.
+    - **3.6** Perfis (`role`): `user` e `admin`. Todo `register` nasce `user`.
+    - **3.7** Operações `admin_*` e criar/alterar/remover sala exigem `admin`. Token válido sem permissão → 403.
+    - **3.8** O autor é identificado **pelo token**; o cliente nunca envia o próprio `user` para dizer quem é.
+
+    Cada operação indica o nível de acesso na extensão `x-acesso`: `publico` (sem token), `logado`,
+    `admin`, `dono` (dono da reserva) ou `dono-ou-admin`.
+
+    ## 4. Erros e ordem de validação
+
+    Linha acima do limite, JSON inválido ou `op` desconhecida → resposta `error` (ver operação **linha_invalida**).
+    Qualquer operação pode responder **500**: `{"op": "<op>_response", "status": "500", "message": "Erro interno do servidor"}`.
+    O servidor nunca fecha a conexão sem responder a uma requisição recebida por completo.
+
+    Ordem sugerida de validação (a planilha não fixa a precedência, ver pendência 6):
+    tamanho → JSON → `op` → campos e regex (400) → token (401) → permissão (403) → existência (404) → conflito (409) → executa (200/201).
+
+    ## 5. Concorrência
+
+    - **5.1** Verificar a disponibilidade e gravar a reserva acontecem na **mesma seção crítica**, com lock por `room_id`.
+    - **5.2** `check_availability` é informativo: `"true"` não reserva nada nem garante a reserva seguinte.
+    - **5.3** Dois clientes reservando a mesma sala e horário: o primeiro a obter o lock recebe 201; o segundo, 409.
+    - **5.4** Há conflito quando `novo_inicio < fim_existente` **e** `novo_fim > inicio_existente`. Encostar (começar exatamente no fim de outra) **não** é conflito.
+
+    ## 6. Códigos de status
+
+    | status | Significado | Quando o servidor usa | Como o cliente reage |
+    |---|---|---|---|
+    | 200 | OK | Sucesso em leitura, atualização, remoção, login e logout. | Segue o fluxo e atualiza a tela. |
+    | 201 | Created | Recurso criado: `register`, `create_room`, `create_reservation`. | Confirma e guarda o id devolvido. |
+    | 400 | Bad Request | Campo ausente, nulo, tipo inválido, regex reprovada, JSON inválido, mensagem acima do limite. | Mostra o erro e mantém o formulário preenchido. |
+    | 401 | Unauthorized | Credenciais incorretas; token ausente, inválido, expirado ou invalidado. | Descarta o token e volta ao login. |
+    | 403 | Forbidden | Token válido sem permissão: usuário comum em op de admin, reserva de terceiro, último admin. | Informa a falta de permissão; não repete. |
+    | 404 | Not Found | Usuário alvo, sala ou reserva inexistente. | Informa e recarrega a listagem. |
+    | 409 | Conflict | Já cadastrado, sessão ativa, horário reservado, sala com reservas ativas. | Mostra o conflito e oferece alternativa. |
+    | 500 | Internal Server Error | Falha inesperada no servidor. | Informa e permite nova tentativa; não descarta o token. |
+
+    ## 7. Pendências encontradas ao modelar
+
+    1. **Token ausente**: a regra 2.10 manda responder 400 (campo obrigatório ausente), mas a aba *Códigos de Status* lista "token ausente" como 401.
+    2. **`delete_user` com senha incorreta** responde 401, mas a planilha não define a `message` desse caso.
+    3. **`update_room` reduzindo `capacity`** abaixo dos `participants` de uma reserva futura responde 409, sem `message` definida.
+    4. **`scope` e `min_capacity`** aparecem nas mensagens, mas não no Dicionário. Aqui: `scope` ∈ {mine, all}; `min_capacity` no formato de `capacity`.
+    5. **`resources` em atualização**: a regra 2.11 (`""` = não alterar) não cobre arrays. `[]` esvazia a lista ou mantém?
+    6. **Precedência de erros** não definida (ex.: usuário comum enviando `create_room` inválido recebe 400 ou 403?). Importa para testes entre grupos.
+    7. **Sessão presa**: se a conexão cair e o cliente perder o token, um novo login responde 409 por até 30 min, e o logout exige o token perdido.
+    8. **Maiúsculas**: a regra 2.12 diz que `user`/`email` são gravados em minúsculas, mas as regex rejeitam maiúsculas. Converter ou responder 400?
+    9. **Estados de sala**: uma nota na aba *Msg Salas* cita "fechada para limpeza, ocupado", mas `room_status` só aceita `active`/`inactive`.
+    10. **`update_reservation` pelo admin**: `read_reservation` e `delete_reservation` dizem que o admin age sobre qualquer reserva; `update_reservation` não diz. Aqui ficou `x-acesso: dono`.
+  contact:
+    name: Pedro Silveira e Daniel Jesus
+    url: https://github.com/pedrosalvatori/protocolo-reserva-salas
+  externalDocs:
+    description: Documentação navegável (busca, exemplos e validador de mensagens)
+    url: https://pedrosalvatori.github.io/protocolo-reserva-salas/
+  tags:
+    - $ref: '#/components/tags/autenticacao'
+    - $ref: '#/components/tags/usuario'
+    - $ref: '#/components/tags/admin'
+    - $ref: '#/components/tags/salas'
+    - $ref: '#/components/tags/reservas'
+    - $ref: '#/components/tags/protocolo'
+
+defaultContentType: application/json
+
+servers:
+  servidor:
+    host: '{ip}:{porta}'
+    protocol: tcp
+    title: Servidor de reservas
+    summary: Servidor TCP multithread, uma thread por conexão de cliente.
+    description: |
+      IP e porta são digitados nas telas: o servidor informa a porta de escuta e o cliente
+      informa o IP e a porta do servidor. Cada mensagem é um JSON UTF-8 em linha única terminado
+      por `\n`, com no máximo 8192 bytes. Não existe binding oficial de TCP no AsyncAPI, então os
+      parâmetros de transporte ficam na extensão `x-transporte`.
+    variables:
+      ip:
+        description: IP do servidor, digitado no cliente.
+        examples: ['127.0.0.1']
+      porta:
+        description: Porta de escuta, digitada no servidor e no cliente.
+        examples: ['5000']
+    x-transporte:
+      codificacao: UTF-8
+      delimitador: LF
+      tamanho_maximo_bytes: 8192
+      timeout_inatividade_s: 300
+      validade_token_min: 30
+      modelo: requisicao-resposta
+
+channels:
+  conexao:
+    address: null
+    title: Conexão TCP
+    summary: Canal único. Todas as mensagens trafegam na mesma conexão TCP, uma por linha.
+    description: |
+      Não há rotas nem tópicos: é o campo `op` do JSON que identifica a operação.
+      A correlação requisição ↔ resposta é **posicional**: a conexão é síncrona (uma resposta por
+      requisição, na ordem) e a resposta repete a `op` com o sufixo `_response`.
+    servers:
+      - $ref: '#/servers/servidor'
+    messages:
+      register: {$ref: '#/components/messages/register'}
+      register_response: {$ref: '#/components/messages/register_response'}
+      login: {$ref: '#/components/messages/login'}
+      login_response: {$ref: '#/components/messages/login_response'}
+      logout: {$ref: '#/components/messages/logout'}
+      logout_response: {$ref: '#/components/messages/logout_response'}
+      read_user: {$ref: '#/components/messages/read_user'}
+      read_user_response: {$ref: '#/components/messages/read_user_response'}
+      update_user: {$ref: '#/components/messages/update_user'}
+      update_user_response: {$ref: '#/components/messages/update_user_response'}
+      delete_user: {$ref: '#/components/messages/delete_user'}
+      delete_user_response: {$ref: '#/components/messages/delete_user_response'}
+      admin_list_users: {$ref: '#/components/messages/admin_list_users'}
+      admin_list_users_response: {$ref: '#/components/messages/admin_list_users_response'}
+      admin_read_user: {$ref: '#/components/messages/admin_read_user'}
+      admin_read_user_response: {$ref: '#/components/messages/admin_read_user_response'}
+      admin_update_user: {$ref: '#/components/messages/admin_update_user'}
+      admin_update_user_response: {$ref: '#/components/messages/admin_update_user_response'}
+      admin_delete_user: {$ref: '#/components/messages/admin_delete_user'}
+      admin_delete_user_response: {$ref: '#/components/messages/admin_delete_user_response'}
+      create_room: {$ref: '#/components/messages/create_room'}
+      create_room_response: {$ref: '#/components/messages/create_room_response'}
+      list_rooms: {$ref: '#/components/messages/list_rooms'}
+      list_rooms_response: {$ref: '#/components/messages/list_rooms_response'}
+      read_room: {$ref: '#/components/messages/read_room'}
+      read_room_response: {$ref: '#/components/messages/read_room_response'}
+      update_room: {$ref: '#/components/messages/update_room'}
+      update_room_response: {$ref: '#/components/messages/update_room_response'}
+      delete_room: {$ref: '#/components/messages/delete_room'}
+      delete_room_response: {$ref: '#/components/messages/delete_room_response'}
+      check_availability: {$ref: '#/components/messages/check_availability'}
+      check_availability_response: {$ref: '#/components/messages/check_availability_response'}
+      create_reservation: {$ref: '#/components/messages/create_reservation'}
+      create_reservation_response: {$ref: '#/components/messages/create_reservation_response'}
+      list_reservations: {$ref: '#/components/messages/list_reservations'}
+      list_reservations_response: {$ref: '#/components/messages/list_reservations_response'}
+      read_reservation: {$ref: '#/components/messages/read_reservation'}
+      read_reservation_response: {$ref: '#/components/messages/read_reservation_response'}
+      update_reservation: {$ref: '#/components/messages/update_reservation'}
+      update_reservation_response: {$ref: '#/components/messages/update_reservation_response'}
+      delete_reservation: {$ref: '#/components/messages/delete_reservation'}
+      delete_reservation_response: {$ref: '#/components/messages/delete_reservation_response'}
+      linha_invalida: {$ref: '#/components/messages/linha_invalida'}
+      error: {$ref: '#/components/messages/error'}
+
+operations:
+  # ───────────────────────────── Autenticação ─────────────────────────────
+  register:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: register
+    x-acesso: publico
+    summary: Cria uma conta. Não envia token.
+    description: |
+      - Valida `user`, `password` e `email` pelas regex do dicionário.
+      - Todo cadastro nasce com `role` "user".
+      - O cadastro **não** cria sessão: o cliente deve fazer `login` em seguida.
+    tags: [{$ref: '#/components/tags/autenticacao'}]
+    messages: [{$ref: '#/channels/conexao/messages/register'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/register_response'}]
+
+  login:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: login
+    x-acesso: publico
+    summary: Autentica por email e senha e devolve token e role.
+    description: |
+      - Credenciais corretas: o servidor gera e grava o token e devolve `token` e `role`.
+      - Usuário inexistente e senha errada devolvem a **mesma** mensagem 401, para não revelar quais usuários existem.
+      - Sessão ativa → 409 (fazer logout ou aguardar a expiração de 30 min).
+    tags: [{$ref: '#/components/tags/autenticacao'}]
+    messages: [{$ref: '#/channels/conexao/messages/login'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/login_response'}]
+
+  logout:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: logout
+    x-acesso: logado
+    summary: Invalida o token da sessão.
+    description: |
+      - O servidor busca o token no banco e o invalida. Token já invalidado → 401.
+      - Após o 200 o cliente descarta o token e volta à tela de login.
+    tags: [{$ref: '#/components/tags/autenticacao'}]
+    messages: [{$ref: '#/channels/conexao/messages/logout'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/logout_response'}]
+
+  # ─────────────────────────── Próprio cadastro ───────────────────────────
+  read_user:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: read_user
+    x-acesso: logado
+    summary: Lê o próprio cadastro.
+    description: |
+      - Não há campo de usuário alvo: o autor vem do token. A senha nunca é devolvida.
+      - Para ler o cadastro de outro usuário existe `admin_read_user`.
+    tags: [{$ref: '#/components/tags/usuario'}]
+    messages: [{$ref: '#/channels/conexao/messages/read_user'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/read_user_response'}]
+
+  update_user:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: update_user
+    x-acesso: logado
+    summary: Altera o próprio user e/ou a própria senha.
+    description: |
+      - `""` é ignorado (não altera); `null` → 400.
+      - O `email` **não** pode ser alterado (RNF 5.c): se a chave `email` vier na requisição → 400.
+      - Ao trocar o próprio `user`, o token continua válido.
+    tags: [{$ref: '#/components/tags/usuario'}]
+    messages: [{$ref: '#/channels/conexao/messages/update_user'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/update_user_response'}]
+
+  delete_user:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: delete_user
+    x-acesso: logado
+    summary: Remove o próprio cadastro, confirmando com a senha.
+    description: |
+      - O alvo vem do token e a senha confirma a operação. Senha incorreta → 401.
+      - O token é invalidado junto e as reservas futuras do usuário são canceladas.
+      - Remoção de outro usuário: `admin_delete_user`.
+      - ⚠ Pendência 2: não há `message` definida para o 401 de senha incorreta.
+    tags: [{$ref: '#/components/tags/usuario'}]
+    messages: [{$ref: '#/channels/conexao/messages/delete_user'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/delete_user_response'}]
+
+  # ───────────────────────────── Administrador ────────────────────────────
+  admin_list_users:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: admin_list_users
+    x-acesso: admin
+    summary: Lista todos os cadastros. Requer role admin.
+    description: |
+      - Nunca devolve senhas.
+      - Lista vazia → 200 com `"count": "0"` e `"users": []`.
+    tags: [{$ref: '#/components/tags/admin'}]
+    messages: [{$ref: '#/channels/conexao/messages/admin_list_users'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/admin_list_users_response'}]
+
+  admin_read_user:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: admin_read_user
+    x-acesso: admin
+    summary: Lê o cadastro de qualquer usuário. Requer role admin.
+    description: |
+      - `target_user` é sempre o alvo; o autor continua sendo identificado pelo token.
+    tags: [{$ref: '#/components/tags/admin'}]
+    messages: [{$ref: '#/channels/conexao/messages/admin_read_user'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/admin_read_user_response'}]
+
+  admin_update_user:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: admin_update_user
+    x-acesso: admin
+    summary: Altera user, senha e/ou role de qualquer usuário. Requer role admin.
+    description: |
+      - Mesmas regras de `update_user` (`""` = não alterar; `email` proibido), e o admin também pode alterar `role`.
+      - Rebaixar o próprio role sendo o único admin → 403 "Nao e possivel remover o ultimo administrador".
+    tags: [{$ref: '#/components/tags/admin'}]
+    messages: [{$ref: '#/channels/conexao/messages/admin_update_user'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/admin_update_user_response'}]
+
+  admin_delete_user:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: admin_delete_user
+    x-acesso: admin
+    summary: Remove qualquer usuário. Requer role admin.
+    description: |
+      - Remover o último administrador → 403 "Nao e possivel remover o ultimo administrador".
+      - A sessão do usuário removido é encerrada e suas reservas futuras são canceladas.
+    tags: [{$ref: '#/components/tags/admin'}]
+    messages: [{$ref: '#/channels/conexao/messages/admin_delete_user'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/admin_delete_user_response'}]
+
+  # ──────────────────────────────── Salas ─────────────────────────────────
+  create_room:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: create_room
+    x-acesso: admin
+    summary: Cadastra uma sala. Requer role admin.
+    description: |
+      - `room_id` é gerado pelo servidor. A sala nasce com `"room_status": "active"`.
+      - `resources` pode ser array vazio. Nome duplicado → 409.
+    tags: [{$ref: '#/components/tags/salas'}]
+    messages: [{$ref: '#/channels/conexao/messages/create_room'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/create_room_response'}]
+
+  list_rooms:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: list_rooms
+    x-acesso: logado
+    summary: Lista salas, com filtros opcionais de horário e capacidade.
+    description: |
+      - Liberado para qualquer usuário logado. Os quatro filtros são **opcionais**.
+      - Sem `date`/`start_time`/`end_time`: lista todas as salas e omite `available`.
+      - Com o trio completo, cada sala vem com `available`. Enviar só parte do trio → 400.
+      - Lista vazia → 200 com `"count": "0"`.
+    tags: [{$ref: '#/components/tags/salas'}]
+    messages: [{$ref: '#/channels/conexao/messages/list_rooms'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/list_rooms_response'}]
+
+  read_room:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: read_room
+    x-acesso: logado
+    summary: Lê uma sala.
+    description: |
+      - Liberado para qualquer usuário logado.
+      - A agenda da sala é obtida com `list_reservations` filtrando por `room_id`.
+    tags: [{$ref: '#/components/tags/salas'}]
+    messages: [{$ref: '#/channels/conexao/messages/read_room'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/read_room_response'}]
+
+  update_room:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: update_room
+    x-acesso: admin
+    summary: Altera uma sala. Requer role admin.
+    description: |
+      - `""` é ignorado; `null` → 400. `room_id` nunca muda.
+      - Reduzir `capacity` abaixo dos `participants` de uma reserva futura → 409.
+      - `"room_status": "inactive"` bloqueia novas reservas, mas preserva as existentes.
+      - ⚠ Pendências 3 e 5: sem `message` para o 409 de capacidade; sem forma de "não alterar" o array `resources`.
+    tags: [{$ref: '#/components/tags/salas'}]
+    messages: [{$ref: '#/channels/conexao/messages/update_room'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/update_room_response'}]
+
+  delete_room:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: delete_room
+    x-acesso: admin
+    summary: Remove uma sala sem reservas futuras. Requer role admin.
+    description: |
+      - Sala com reservas futuras → 409.
+      - Para tirar de circulação uma sala com agenda, use `update_room` com `"room_status": "inactive"`.
+    tags: [{$ref: '#/components/tags/salas'}]
+    messages: [{$ref: '#/channels/conexao/messages/delete_room'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/delete_room_response'}]
+
+  # ─────────────────────────────── Reservas ───────────────────────────────
+  check_availability:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: check_availability
+    x-acesso: logado
+    summary: Consulta informativa se a sala está livre no horário.
+    description: |
+      - **Não** reserva e não garante nada (regra 5.2).
+      - Sala ocupada → 200 com `"available": "false"` (não é erro). Sala `inactive` → `"available": "false"`.
+    tags: [{$ref: '#/components/tags/reservas'}]
+    messages: [{$ref: '#/channels/conexao/messages/check_availability'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/check_availability_response'}]
+
+  create_reservation:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: create_reservation
+    x-acesso: logado
+    summary: Reserva uma sala. Ponto crítico de concorrência.
+    description: |
+      - Verificação e gravação acontecem sob o **mesmo lock por `room_id`** (regra 5.1):
+        com pedidos simultâneos, o primeiro recebe 201 e o segundo 409.
+      - Respondem 400: `end_time <= start_time`, data passada e `participants > capacity`.
+      - Sala `inactive` → 409 "Sala indisponivel para reserva".
+    tags: [{$ref: '#/components/tags/reservas'}]
+    messages: [{$ref: '#/channels/conexao/messages/create_reservation'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/create_reservation_response'}]
+
+  list_reservations:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: list_reservations
+    x-acesso: logado
+    summary: Lista as minhas reservas ou todas (admin).
+    description: |
+      - `scope` aceita "mine" (padrão, se ausente) e "all". "all" só para admin; usuário comum → 403.
+      - `date` e `room_id` são filtros opcionais. Lista vazia → 200 com `"count": "0"`.
+    tags: [{$ref: '#/components/tags/reservas'}]
+    messages: [{$ref: '#/channels/conexao/messages/list_reservations'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/list_reservations_response'}]
+
+  read_reservation:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: read_reservation
+    x-acesso: dono-ou-admin
+    summary: Lê uma reserva.
+    description: |
+      - Usuário comum lê apenas as próprias reservas; reserva de terceiro → 403.
+      - O admin lê qualquer reserva.
+    tags: [{$ref: '#/components/tags/reservas'}]
+    messages: [{$ref: '#/channels/conexao/messages/read_reservation'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/read_reservation_response'}]
+
+  update_reservation:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: update_reservation
+    x-acesso: dono
+    summary: Altera horário, assunto ou participantes de uma reserva.
+    description: |
+      - `""` é ignorado; `null` → 400. Reserva de terceiro → 403.
+      - `room_id` e `date` não mudam: para trocar de sala ou de dia, cancela-se e cria-se outra reserva.
+      - Estender o horário passa pelo mesmo lock de `create_reservation`.
+      - Reserva já encerrada → 409 "Reserva ja encerrada".
+      - ⚠ Pendência 10: não está definido se o admin pode alterar reserva de terceiro.
+    tags: [{$ref: '#/components/tags/reservas'}]
+    messages: [{$ref: '#/channels/conexao/messages/update_reservation'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/update_reservation_response'}]
+
+  delete_reservation:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: delete_reservation
+    x-acesso: dono-ou-admin
+    summary: Cancela uma reserva e libera a sala.
+    description: |
+      - Libera a sala imediatamente (equivale a liberá-la antecipadamente).
+      - Usuário comum cancela apenas as próprias reservas; o admin cancela qualquer uma.
+      - Reserva já encerrada → 409.
+    tags: [{$ref: '#/components/tags/reservas'}]
+    messages: [{$ref: '#/channels/conexao/messages/delete_reservation'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/delete_reservation_response'}]
+
+  # ───────────────────────────── Protocolo ────────────────────────────────
+  linha_invalida:
+    action: receive
+    channel: {$ref: '#/channels/conexao'}
+    title: linha inválida
+    x-acesso: publico
+    summary: Qualquer linha fora do protocolo recebe `error` com status 400.
+    description: |
+      - JSON inválido → "Requisicao invalida".
+      - `op` desconhecida → "Operacao desconhecida".
+      - Mais de 8192 bytes (incluindo o `\n`) → "Mensagem excede o tamanho maximo".
+      - Como a `op` original não pôde ser determinada, a resposta usa `"op": "error"` em vez de `<op>_response`.
+    tags: [{$ref: '#/components/tags/protocolo'}]
+    messages: [{$ref: '#/channels/conexao/messages/linha_invalida'}]
+    reply:
+      channel: {$ref: '#/channels/conexao'}
+      messages: [{$ref: '#/channels/conexao/messages/error'}]
+
+components:
+  tags:
+    autenticacao:
+      name: Autenticação
+      description: register, login e logout.
+    usuario:
+      name: Próprio cadastro
+      description: CRUD do próprio cadastro. O token identifica o autor.
+    admin:
+      name: Administrador
+      description: Operações admin_*. Exigem token de role "admin".
+    salas:
+      name: Salas
+      description: CRUD de salas. Criar, alterar e remover exigem admin; ler e listar são liberados a qualquer usuário logado.
+    reservas:
+      name: Reservas
+      description: CRUD de reservas. O dono da reserva é identificado pelo token.
+    protocolo:
+      name: Protocolo
+      description: Erros de framing e de parse.
+
+  messages:
+    # ─────────────────────────── Autenticação ───────────────────────────
+    register:
+      name: register
+      summary: 'C → S · cria uma conta (sem token)'
+      payload:
+        type: object
+        required: [op, email, user, password]
+        properties:
+          op: {type: string, const: register}
+          email: {$ref: '#/components/schemas/email'}
+          user: {$ref: '#/components/schemas/user'}
+          password: {$ref: '#/components/schemas/password'}
+      examples:
+        - name: requisicao
+          payload: {"op": "register", "email": "joao.silva@email.com", "user": "joao", "password": "senha123"}
+
+    register_response:
+      name: register_response
+      summary: 'S → C · resposta ao register'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: register_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '201 · Usuario cadastrado com sucesso'
+            type: object
+            properties:
+              status: {const: '201'}
+              message: {const: Usuario cadastrado com sucesso}
+          - $ref: '#/components/schemas/E400_cadastro'
+          - $ref: '#/components/schemas/E409_cadastrado'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '201'
+          payload: {"op": "register_response", "status": "201", "message": "Usuario cadastrado com sucesso"}
+        - name: '400'
+          payload: {"op": "register_response", "status": "400", "message": "Dados de cadastro em formato invalido"}
+        - name: '409'
+          payload: {"op": "register_response", "status": "409", "message": "Usuario ou email ja cadastrado"}
+
+    login:
+      name: login
+      summary: 'C → S · autentica por email e senha (sem token)'
+      payload:
+        type: object
+        required: [op, email, password]
+        properties:
+          op: {type: string, const: login}
+          email: {$ref: '#/components/schemas/email'}
+          password: {$ref: '#/components/schemas/password'}
+      examples:
+        - name: requisicao
+          payload: {"op": "login", "email": "joao.silva@email.com", "password": "senha123"}
+
+    login_response:
+      name: login_response
+      summary: 'S → C · resposta ao login'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: login_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Login realizado com sucesso'
+            type: object
+            required: [token, role]
+            properties:
+              status: {const: '200'}
+              message: {const: Login realizado com sucesso}
+              token: {$ref: '#/components/schemas/token'}
+              role: {$ref: '#/components/schemas/role'}
+          - $ref: '#/components/schemas/E400_credenciais'
+          - $ref: '#/components/schemas/E401_credenciais'
+          - $ref: '#/components/schemas/E409_sessao_ativa'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "login_response", "status": "200", "message": "Login realizado com sucesso", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "role": "user"}
+        - name: '400'
+          payload: {"op": "login_response", "status": "400", "message": "Email ou senha em formato invalido"}
+        - name: '401'
+          payload: {"op": "login_response", "status": "401", "message": "Email ou senha incorretos"}
+        - name: '409'
+          payload: {"op": "login_response", "status": "409", "message": "Usuario ja possui sessao ativa"}
+
+    logout:
+      name: logout
+      summary: 'C → S · encerra a sessão'
+      payload:
+        type: object
+        required: [op, token]
+        properties:
+          op: {type: string, const: logout}
+          token: {$ref: '#/components/schemas/token'}
+      examples:
+        - name: requisicao
+          payload: {"op": "logout", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9"}
+
+    logout_response:
+      name: logout_response
+      summary: 'S → C · resposta ao logout'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: logout_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Logout realizado com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Logout realizado com sucesso}
+          - $ref: '#/components/schemas/E400_token'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "logout_response", "status": "200", "message": "Logout realizado com sucesso"}
+        - name: '400'
+          payload: {"op": "logout_response", "status": "400", "message": "Token em formato invalido"}
+        - name: '401'
+          payload: {"op": "logout_response", "status": "401", "message": "Token invalido ou expirado"}
+
+    # ───────────────────────── Próprio cadastro ─────────────────────────
+    read_user:
+      name: read_user
+      summary: 'C → S · lê o próprio cadastro'
+      payload:
+        type: object
+        required: [op, token]
+        properties:
+          op: {type: string, const: read_user}
+          token: {$ref: '#/components/schemas/token'}
+      examples:
+        - name: requisicao
+          payload: {"op": "read_user", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9"}
+
+    read_user_response:
+      name: read_user_response
+      summary: 'S → C · resposta ao read_user'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: read_user_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Consulta realizada com sucesso'
+            type: object
+            required: [user, email, role, created_at]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              user: {$ref: '#/components/schemas/user'}
+              email: {$ref: '#/components/schemas/email'}
+              role: {$ref: '#/components/schemas/role'}
+              created_at: {$ref: '#/components/schemas/created_at'}
+          - $ref: '#/components/schemas/E400_token'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "read_user_response", "status": "200", "message": "Consulta realizada com sucesso", "user": "joao", "email": "joao.silva@email.com", "role": "user", "created_at": "2026-09-09 14:32:10"}
+        - name: '400'
+          payload: {"op": "read_user_response", "status": "400", "message": "Token em formato invalido"}
+        - name: '401'
+          payload: {"op": "read_user_response", "status": "401", "message": "Token invalido ou expirado"}
+
+    update_user:
+      name: update_user
+      summary: 'C → S · altera o próprio cadastro'
+      payload:
+        type: object
+        description: 'Campo "" = não alterar. A chave `email` é proibida (RNF 5.c) e resulta em 400.'
+        required: [op, token, user, password]
+        properties:
+          op: {type: string, const: update_user}
+          token: {$ref: '#/components/schemas/token'}
+          user:
+            description: Novo nome de usuário, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/user'
+              - $ref: '#/components/schemas/nao_alterar'
+          password:
+            description: Nova senha, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/password'
+              - $ref: '#/components/schemas/nao_alterar'
+        not:
+          required: [email]
+      examples:
+        - name: requisicao
+          payload: {"op": "update_user", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "user": "joao", "password": "novasenha1"}
+
+    update_user_response:
+      name: update_user_response
+      summary: 'S → C · resposta ao update_user'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: update_user_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Dados atualizados com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Dados atualizados com sucesso}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E409_usuario_em_uso'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "update_user_response", "status": "200", "message": "Dados atualizados com sucesso"}
+        - name: '400'
+          payload: {"op": "update_user_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "update_user_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '409'
+          payload: {"op": "update_user_response", "status": "409", "message": "Usuario ja esta em uso"}
+
+    delete_user:
+      name: delete_user
+      summary: 'C → S · remove o próprio cadastro'
+      payload:
+        type: object
+        required: [op, token, password]
+        properties:
+          op: {type: string, const: delete_user}
+          token: {$ref: '#/components/schemas/token'}
+          password: {$ref: '#/components/schemas/password'}
+      examples:
+        - name: requisicao
+          payload: {"op": "delete_user", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "password": "senha123"}
+
+    delete_user_response:
+      name: delete_user_response
+      summary: 'S → C · resposta ao delete_user'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: delete_user_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Usuario removido com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Usuario removido com sucesso}
+          - $ref: '#/components/schemas/E400_senha'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_ultimo_admin'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "delete_user_response", "status": "200", "message": "Usuario removido com sucesso"}
+        - name: '400'
+          payload: {"op": "delete_user_response", "status": "400", "message": "Senha em formato invalido"}
+        - name: '401'
+          payload: {"op": "delete_user_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "delete_user_response", "status": "403", "message": "Nao e possivel remover o ultimo administrador"}
+
+    # ─────────────────────────── Administrador ──────────────────────────
+    admin_list_users:
+      name: admin_list_users
+      summary: 'C → S · lista todos os usuários (admin)'
+      payload:
+        type: object
+        required: [op, token]
+        properties:
+          op: {type: string, const: admin_list_users}
+          token: {$ref: '#/components/schemas/token'}
+      examples:
+        - name: requisicao
+          payload: {"op": "admin_list_users", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b"}
+
+    admin_list_users_response:
+      name: admin_list_users_response
+      summary: 'S → C · resposta ao admin_list_users'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: admin_list_users_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Consulta realizada com sucesso'
+            type: object
+            required: [count, users]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              count: {$ref: '#/components/schemas/count'}
+              users:
+                type: array
+                items: {$ref: '#/components/schemas/Usuario'}
+          - $ref: '#/components/schemas/E400_token'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "admin_list_users_response", "status": "200", "message": "Consulta realizada com sucesso", "count": "2", "users": [{"user": "joao", "email": "joao.silva@email.com", "role": "user"}, {"user": "maria", "email": "maria@email.com", "role": "admin"}]}
+        - name: '400'
+          payload: {"op": "admin_list_users_response", "status": "400", "message": "Token em formato invalido"}
+        - name: '401'
+          payload: {"op": "admin_list_users_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "admin_list_users_response", "status": "403", "message": "Permissao insuficiente"}
+
+    admin_read_user:
+      name: admin_read_user
+      summary: 'C → S · lê o cadastro de outro usuário (admin)'
+      payload:
+        type: object
+        required: [op, token, target_user]
+        properties:
+          op: {type: string, const: admin_read_user}
+          token: {$ref: '#/components/schemas/token'}
+          target_user: {$ref: '#/components/schemas/target_user'}
+      examples:
+        - name: requisicao
+          payload: {"op": "admin_read_user", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "target_user": "joao"}
+
+    admin_read_user_response:
+      name: admin_read_user_response
+      summary: 'S → C · resposta ao admin_read_user'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: admin_read_user_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Consulta realizada com sucesso'
+            type: object
+            required: [user, email, role, created_at]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              user: {$ref: '#/components/schemas/user'}
+              email: {$ref: '#/components/schemas/email'}
+              role: {$ref: '#/components/schemas/role'}
+              created_at: {$ref: '#/components/schemas/created_at'}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E404_usuario'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "admin_read_user_response", "status": "200", "message": "Consulta realizada com sucesso", "user": "joao", "email": "joao.silva@email.com", "role": "user", "created_at": "2026-09-09 14:32:10"}
+        - name: '400'
+          payload: {"op": "admin_read_user_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "admin_read_user_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "admin_read_user_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: '404'
+          payload: {"op": "admin_read_user_response", "status": "404", "message": "Usuario nao encontrado"}
+
+    admin_update_user:
+      name: admin_update_user
+      summary: 'C → S · altera o cadastro de outro usuário (admin)'
+      payload:
+        type: object
+        description: 'Campo "" = não alterar. A chave `email` é proibida e resulta em 400.'
+        required: [op, token, target_user, user, password, role]
+        properties:
+          op: {type: string, const: admin_update_user}
+          token: {$ref: '#/components/schemas/token'}
+          target_user: {$ref: '#/components/schemas/target_user'}
+          user:
+            description: Novo nome do usuário alvo, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/user'
+              - $ref: '#/components/schemas/nao_alterar'
+          password:
+            description: Nova senha do usuário alvo, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/password'
+              - $ref: '#/components/schemas/nao_alterar'
+          role:
+            description: Novo perfil do usuário alvo, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/role'
+              - $ref: '#/components/schemas/nao_alterar'
+        not:
+          required: [email]
+      examples:
+        - name: requisicao
+          payload: {"op": "admin_update_user", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "target_user": "joao", "user": "joao", "password": "", "role": "admin"}
+
+    admin_update_user_response:
+      name: admin_update_user_response
+      summary: 'S → C · resposta ao admin_update_user'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: admin_update_user_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Dados atualizados com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Dados atualizados com sucesso}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E403_ultimo_admin'
+          - $ref: '#/components/schemas/E404_usuario'
+          - $ref: '#/components/schemas/E409_usuario_em_uso'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "admin_update_user_response", "status": "200", "message": "Dados atualizados com sucesso"}
+        - name: '400'
+          payload: {"op": "admin_update_user_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "admin_update_user_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: 403 permissao
+          payload: {"op": "admin_update_user_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: 403 ultimo admin
+          payload: {"op": "admin_update_user_response", "status": "403", "message": "Nao e possivel remover o ultimo administrador"}
+        - name: '404'
+          payload: {"op": "admin_update_user_response", "status": "404", "message": "Usuario nao encontrado"}
+        - name: '409'
+          payload: {"op": "admin_update_user_response", "status": "409", "message": "Usuario ja esta em uso"}
+
+    admin_delete_user:
+      name: admin_delete_user
+      summary: 'C → S · remove outro usuário (admin)'
+      payload:
+        type: object
+        required: [op, token, target_user]
+        properties:
+          op: {type: string, const: admin_delete_user}
+          token: {$ref: '#/components/schemas/token'}
+          target_user: {$ref: '#/components/schemas/target_user'}
+      examples:
+        - name: requisicao
+          payload: {"op": "admin_delete_user", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "target_user": "joao"}
+
+    admin_delete_user_response:
+      name: admin_delete_user_response
+      summary: 'S → C · resposta ao admin_delete_user'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: admin_delete_user_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Usuario removido com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Usuario removido com sucesso}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E403_ultimo_admin'
+          - $ref: '#/components/schemas/E404_usuario'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "admin_delete_user_response", "status": "200", "message": "Usuario removido com sucesso"}
+        - name: '400'
+          payload: {"op": "admin_delete_user_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "admin_delete_user_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: 403 permissao
+          payload: {"op": "admin_delete_user_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: 403 ultimo admin
+          payload: {"op": "admin_delete_user_response", "status": "403", "message": "Nao e possivel remover o ultimo administrador"}
+        - name: '404'
+          payload: {"op": "admin_delete_user_response", "status": "404", "message": "Usuario nao encontrado"}
+
+    # ─────────────────────────────── Salas ──────────────────────────────
+    create_room:
+      name: create_room
+      summary: 'C → S · cadastra uma sala (admin)'
+      payload:
+        type: object
+        required: [op, token, name, capacity, location, resources]
+        properties:
+          op: {type: string, const: create_room}
+          token: {$ref: '#/components/schemas/token'}
+          name: {$ref: '#/components/schemas/name'}
+          capacity: {$ref: '#/components/schemas/capacity'}
+          location: {$ref: '#/components/schemas/location'}
+          resources: {$ref: '#/components/schemas/resources'}
+      examples:
+        - name: requisicao
+          payload: {"op": "create_room", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "name": "Sala de Estudo B12", "capacity": "12", "location": "Bloco B - 1 andar", "resources": ["projetor", "tv"]}
+
+    create_room_response:
+      name: create_room_response
+      summary: 'S → C · resposta ao create_room'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: create_room_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '201 · Sala cadastrada com sucesso'
+            type: object
+            required: [room_id]
+            properties:
+              status: {const: '201'}
+              message: {const: Sala cadastrada com sucesso}
+              room_id: {$ref: '#/components/schemas/room_id'}
+          - $ref: '#/components/schemas/E400_sala'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E409_sala_cadastrada'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '201'
+          payload: {"op": "create_room_response", "status": "201", "message": "Sala cadastrada com sucesso", "room_id": "1"}
+        - name: '400'
+          payload: {"op": "create_room_response", "status": "400", "message": "Dados da sala em formato invalido"}
+        - name: '401'
+          payload: {"op": "create_room_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "create_room_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: '409'
+          payload: {"op": "create_room_response", "status": "409", "message": "Sala ja cadastrada"}
+
+    list_rooms:
+      name: list_rooms
+      summary: 'C → S · lista salas (filtros opcionais)'
+      payload:
+        type: object
+        description: 'Filtros opcionais. date, start_time e end_time vêm juntos ou nenhum deles (parte do trio → 400).'
+        required: [op, token]
+        properties:
+          op: {type: string, const: list_rooms}
+          token: {$ref: '#/components/schemas/token'}
+          date: {$ref: '#/components/schemas/date'}
+          start_time: {$ref: '#/components/schemas/start_time'}
+          end_time: {$ref: '#/components/schemas/end_time'}
+          min_capacity: {$ref: '#/components/schemas/min_capacity'}
+        dependencies:
+          date: [start_time, end_time]
+          start_time: [date, end_time]
+          end_time: [date, start_time]
+      examples:
+        - name: com filtros
+          payload: {"op": "list_rooms", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "date": "2026-09-15", "start_time": "14:00", "end_time": "16:00", "min_capacity": "6"}
+        - name: sem filtros
+          payload: {"op": "list_rooms", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9"}
+
+    list_rooms_response:
+      name: list_rooms_response
+      summary: 'S → C · resposta ao list_rooms'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: list_rooms_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Consulta realizada com sucesso'
+            type: object
+            required: [count, rooms]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              count: {$ref: '#/components/schemas/count'}
+              rooms:
+                type: array
+                items: {$ref: '#/components/schemas/Sala'}
+          - $ref: '#/components/schemas/E400_filtros'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "list_rooms_response", "status": "200", "message": "Consulta realizada com sucesso", "count": "1", "rooms": [{"room_id": "1", "name": "Sala de Estudo B12", "capacity": "12", "location": "Bloco B - 1 andar", "resources": ["projetor", "tv"], "room_status": "active", "available": "true"}]}
+        - name: '400'
+          payload: {"op": "list_rooms_response", "status": "400", "message": "Filtros em formato invalido"}
+        - name: '401'
+          payload: {"op": "list_rooms_response", "status": "401", "message": "Token invalido ou expirado"}
+
+    read_room:
+      name: read_room
+      summary: 'C → S · lê uma sala'
+      payload:
+        type: object
+        required: [op, token, room_id]
+        properties:
+          op: {type: string, const: read_room}
+          token: {$ref: '#/components/schemas/token'}
+          room_id: {$ref: '#/components/schemas/room_id'}
+      examples:
+        - name: requisicao
+          payload: {"op": "read_room", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "room_id": "1"}
+
+    read_room_response:
+      name: read_room_response
+      summary: 'S → C · resposta ao read_room'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: read_room_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Consulta realizada com sucesso'
+            type: object
+            required: [room_id, name, capacity, location, resources, room_status]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              room_id: {$ref: '#/components/schemas/room_id'}
+              name: {$ref: '#/components/schemas/name'}
+              capacity: {$ref: '#/components/schemas/capacity'}
+              location: {$ref: '#/components/schemas/location'}
+              resources: {$ref: '#/components/schemas/resources'}
+              room_status: {$ref: '#/components/schemas/room_status'}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E404_sala'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "read_room_response", "status": "200", "message": "Consulta realizada com sucesso", "room_id": "1", "name": "Sala de Estudo B12", "capacity": "12", "location": "Bloco B - 1 andar", "resources": ["projetor", "tv"], "room_status": "active"}
+        - name: '400'
+          payload: {"op": "read_room_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "read_room_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '404'
+          payload: {"op": "read_room_response", "status": "404", "message": "Sala nao encontrada"}
+
+    update_room:
+      name: update_room
+      summary: 'C → S · altera uma sala (admin)'
+      payload:
+        type: object
+        description: 'Campo "" = não alterar. `resources` é enviado como lista completa.'
+        required: [op, token, room_id, name, capacity, location, resources, room_status]
+        properties:
+          op: {type: string, const: update_room}
+          token: {$ref: '#/components/schemas/token'}
+          room_id: {$ref: '#/components/schemas/room_id'}
+          name:
+            description: Novo nome, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/name'
+              - $ref: '#/components/schemas/nao_alterar'
+          capacity:
+            description: Nova capacidade, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/capacity'
+              - $ref: '#/components/schemas/nao_alterar'
+          location:
+            description: Nova localização, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/location'
+              - $ref: '#/components/schemas/nao_alterar'
+          resources: {$ref: '#/components/schemas/resources'}
+          room_status:
+            description: Novo estado, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/room_status'
+              - $ref: '#/components/schemas/nao_alterar'
+      examples:
+        - name: requisicao
+          payload: {"op": "update_room", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "room_id": "1", "name": "", "capacity": "16", "location": "", "resources": ["projetor", "tv", "quadro"], "room_status": "active"}
+
+    update_room_response:
+      name: update_room_response
+      summary: 'S → C · resposta ao update_room'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: update_room_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Sala atualizada com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Sala atualizada com sucesso}
+          - $ref: '#/components/schemas/E400_sala'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E404_sala'
+          - $ref: '#/components/schemas/E409_sala_cadastrada'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "update_room_response", "status": "200", "message": "Sala atualizada com sucesso"}
+        - name: '400'
+          payload: {"op": "update_room_response", "status": "400", "message": "Dados da sala em formato invalido"}
+        - name: '401'
+          payload: {"op": "update_room_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "update_room_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: '404'
+          payload: {"op": "update_room_response", "status": "404", "message": "Sala nao encontrada"}
+        - name: '409'
+          payload: {"op": "update_room_response", "status": "409", "message": "Sala ja cadastrada"}
+
+    delete_room:
+      name: delete_room
+      summary: 'C → S · remove uma sala (admin)'
+      payload:
+        type: object
+        required: [op, token, room_id]
+        properties:
+          op: {type: string, const: delete_room}
+          token: {$ref: '#/components/schemas/token'}
+          room_id: {$ref: '#/components/schemas/room_id'}
+      examples:
+        - name: requisicao
+          payload: {"op": "delete_room", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "room_id": "1"}
+
+    delete_room_response:
+      name: delete_room_response
+      summary: 'S → C · resposta ao delete_room'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: delete_room_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Sala removida com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Sala removida com sucesso}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E404_sala'
+          - $ref: '#/components/schemas/E409_reservas_ativas'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "delete_room_response", "status": "200", "message": "Sala removida com sucesso"}
+        - name: '400'
+          payload: {"op": "delete_room_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "delete_room_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "delete_room_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: '404'
+          payload: {"op": "delete_room_response", "status": "404", "message": "Sala nao encontrada"}
+        - name: '409'
+          payload: {"op": "delete_room_response", "status": "409", "message": "Sala possui reservas ativas"}
+
+    # ────────────────────────────── Reservas ────────────────────────────
+    check_availability:
+      name: check_availability
+      summary: 'C → S · consulta disponibilidade (informativa)'
+      payload:
+        type: object
+        required: [op, token, room_id, date, start_time, end_time]
+        properties:
+          op: {type: string, const: check_availability}
+          token: {$ref: '#/components/schemas/token'}
+          room_id: {$ref: '#/components/schemas/room_id'}
+          date: {$ref: '#/components/schemas/date'}
+          start_time: {$ref: '#/components/schemas/start_time'}
+          end_time: {$ref: '#/components/schemas/end_time'}
+      examples:
+        - name: requisicao
+          payload: {"op": "check_availability", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "room_id": "1", "date": "2026-09-15", "start_time": "14:00", "end_time": "16:00"}
+
+    check_availability_response:
+      name: check_availability_response
+      summary: 'S → C · resposta ao check_availability'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: check_availability_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Consulta realizada com sucesso'
+            type: object
+            required: [room_id, date, start_time, end_time, available]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              room_id: {$ref: '#/components/schemas/room_id'}
+              date: {$ref: '#/components/schemas/date'}
+              start_time: {$ref: '#/components/schemas/start_time'}
+              end_time: {$ref: '#/components/schemas/end_time'}
+              available: {$ref: '#/components/schemas/available'}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E404_sala'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "check_availability_response", "status": "200", "message": "Consulta realizada com sucesso", "room_id": "1", "date": "2026-09-15", "start_time": "14:00", "end_time": "16:00", "available": "false"}
+        - name: '400'
+          payload: {"op": "check_availability_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "check_availability_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '404'
+          payload: {"op": "check_availability_response", "status": "404", "message": "Sala nao encontrada"}
+
+    create_reservation:
+      name: create_reservation
+      summary: 'C → S · reserva uma sala'
+      payload:
+        type: object
+        required: [op, token, room_id, date, start_time, end_time, topic, participants]
+        properties:
+          op: {type: string, const: create_reservation}
+          token: {$ref: '#/components/schemas/token'}
+          room_id: {$ref: '#/components/schemas/room_id'}
+          date: {$ref: '#/components/schemas/date'}
+          start_time: {$ref: '#/components/schemas/start_time'}
+          end_time: {$ref: '#/components/schemas/end_time'}
+          topic: {$ref: '#/components/schemas/topic'}
+          participants: {$ref: '#/components/schemas/participants'}
+      examples:
+        - name: requisicao
+          payload: {"op": "create_reservation", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "room_id": "1", "date": "2026-09-15", "start_time": "14:00", "end_time": "16:00", "topic": "Reuniao de projeto", "participants": "6"}
+
+    create_reservation_response:
+      name: create_reservation_response
+      summary: 'S → C · resposta ao create_reservation'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: create_reservation_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '201 · Reserva realizada com sucesso'
+            type: object
+            required: [reservation_id]
+            properties:
+              status: {const: '201'}
+              message: {const: Reserva realizada com sucesso}
+              reservation_id: {$ref: '#/components/schemas/reservation_id'}
+          - $ref: '#/components/schemas/E400_reserva'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E404_sala'
+          - $ref: '#/components/schemas/E409_periodo'
+          - $ref: '#/components/schemas/E409_sala_indisponivel'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '201'
+          payload: {"op": "create_reservation_response", "status": "201", "message": "Reserva realizada com sucesso", "reservation_id": "27"}
+        - name: '400'
+          payload: {"op": "create_reservation_response", "status": "400", "message": "Dados da reserva em formato invalido"}
+        - name: '401'
+          payload: {"op": "create_reservation_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '404'
+          payload: {"op": "create_reservation_response", "status": "404", "message": "Sala nao encontrada"}
+        - name: 409 periodo ocupado
+          payload: {"op": "create_reservation_response", "status": "409", "message": "Sala ja reservada no periodo solicitado"}
+        - name: 409 sala inativa
+          payload: {"op": "create_reservation_response", "status": "409", "message": "Sala indisponivel para reserva"}
+
+    list_reservations:
+      name: list_reservations
+      summary: 'C → S · lista reservas (minhas ou todas)'
+      payload:
+        type: object
+        description: 'scope, date e room_id são opcionais; sem scope vale "mine".'
+        required: [op, token]
+        properties:
+          op: {type: string, const: list_reservations}
+          token: {$ref: '#/components/schemas/token'}
+          scope: {$ref: '#/components/schemas/scope'}
+          date: {$ref: '#/components/schemas/date'}
+          room_id: {$ref: '#/components/schemas/room_id'}
+      examples:
+        - name: requisicao
+          payload: {"op": "list_reservations", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "scope": "mine", "date": "2026-09-15", "room_id": "1"}
+
+    list_reservations_response:
+      name: list_reservations_response
+      summary: 'S → C · resposta ao list_reservations'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: list_reservations_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Consulta realizada com sucesso'
+            type: object
+            required: [count, reservations]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              count: {$ref: '#/components/schemas/count'}
+              reservations:
+                type: array
+                items: {$ref: '#/components/schemas/Reserva'}
+          - $ref: '#/components/schemas/E400_filtros'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "list_reservations_response", "status": "200", "message": "Consulta realizada com sucesso", "count": "1", "reservations": [{"reservation_id": "27", "room_id": "1", "name": "Sala de Estudo B12", "user": "joao", "date": "2026-09-15", "start_time": "14:00", "end_time": "16:00", "topic": "Reuniao de projeto", "participants": "6"}]}
+        - name: '400'
+          payload: {"op": "list_reservations_response", "status": "400", "message": "Filtros em formato invalido"}
+        - name: '401'
+          payload: {"op": "list_reservations_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "list_reservations_response", "status": "403", "message": "Permissao insuficiente"}
+
+    read_reservation:
+      name: read_reservation
+      summary: 'C → S · lê uma reserva'
+      payload:
+        type: object
+        required: [op, token, reservation_id]
+        properties:
+          op: {type: string, const: read_reservation}
+          token: {$ref: '#/components/schemas/token'}
+          reservation_id: {$ref: '#/components/schemas/reservation_id'}
+      examples:
+        - name: requisicao
+          payload: {"op": "read_reservation", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "reservation_id": "27"}
+
+    read_reservation_response:
+      name: read_reservation_response
+      summary: 'S → C · resposta ao read_reservation'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: read_reservation_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Consulta realizada com sucesso'
+            type: object
+            required: [reservation_id, room_id, name, user, date, start_time, end_time, topic, participants, created_at]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              reservation_id: {$ref: '#/components/schemas/reservation_id'}
+              room_id: {$ref: '#/components/schemas/room_id'}
+              name: {$ref: '#/components/schemas/name'}
+              user: {$ref: '#/components/schemas/user'}
+              date: {$ref: '#/components/schemas/date'}
+              start_time: {$ref: '#/components/schemas/start_time'}
+              end_time: {$ref: '#/components/schemas/end_time'}
+              topic: {$ref: '#/components/schemas/topic'}
+              participants: {$ref: '#/components/schemas/participants'}
+              created_at: {$ref: '#/components/schemas/created_at'}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E404_reserva'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "read_reservation_response", "status": "200", "message": "Consulta realizada com sucesso", "reservation_id": "27", "room_id": "1", "name": "Sala de Estudo B12", "user": "joao", "date": "2026-09-15", "start_time": "14:00", "end_time": "16:00", "topic": "Reuniao de projeto", "participants": "6", "created_at": "2026-09-09 15:10:44"}
+        - name: '400'
+          payload: {"op": "read_reservation_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "read_reservation_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "read_reservation_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: '404'
+          payload: {"op": "read_reservation_response", "status": "404", "message": "Reserva nao encontrada"}
+
+    update_reservation:
+      name: update_reservation
+      summary: 'C → S · altera uma reserva'
+      payload:
+        type: object
+        description: 'Campo "" = não alterar. room_id e date não podem ser alterados.'
+        required: [op, token, reservation_id, start_time, end_time, topic, participants]
+        properties:
+          op: {type: string, const: update_reservation}
+          token: {$ref: '#/components/schemas/token'}
+          reservation_id: {$ref: '#/components/schemas/reservation_id'}
+          start_time:
+            description: Novo início, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/start_time'
+              - $ref: '#/components/schemas/nao_alterar'
+          end_time:
+            description: Novo fim, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/end_time'
+              - $ref: '#/components/schemas/nao_alterar'
+          topic:
+            description: Novo assunto, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/topic'
+              - $ref: '#/components/schemas/nao_alterar'
+          participants:
+            description: Novo número de participantes, ou "" para manter.
+            anyOf:
+              - $ref: '#/components/schemas/participants'
+              - $ref: '#/components/schemas/nao_alterar'
+      examples:
+        - name: requisicao
+          payload: {"op": "update_reservation", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "reservation_id": "27", "start_time": "", "end_time": "17:00", "topic": "", "participants": "8"}
+
+    update_reservation_response:
+      name: update_reservation_response
+      summary: 'S → C · resposta ao update_reservation'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: update_reservation_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Reserva atualizada com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Reserva atualizada com sucesso}
+          - $ref: '#/components/schemas/E400_reserva'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E404_reserva'
+          - $ref: '#/components/schemas/E409_periodo'
+          - $ref: '#/components/schemas/E409_encerrada'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "update_reservation_response", "status": "200", "message": "Reserva atualizada com sucesso"}
+        - name: '400'
+          payload: {"op": "update_reservation_response", "status": "400", "message": "Dados da reserva em formato invalido"}
+        - name: '401'
+          payload: {"op": "update_reservation_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "update_reservation_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: '404'
+          payload: {"op": "update_reservation_response", "status": "404", "message": "Reserva nao encontrada"}
+        - name: 409 periodo ocupado
+          payload: {"op": "update_reservation_response", "status": "409", "message": "Sala ja reservada no periodo solicitado"}
+        - name: 409 reserva encerrada
+          payload: {"op": "update_reservation_response", "status": "409", "message": "Reserva ja encerrada"}
+
+    delete_reservation:
+      name: delete_reservation
+      summary: 'C → S · cancela uma reserva'
+      payload:
+        type: object
+        required: [op, token, reservation_id]
+        properties:
+          op: {type: string, const: delete_reservation}
+          token: {$ref: '#/components/schemas/token'}
+          reservation_id: {$ref: '#/components/schemas/reservation_id'}
+      examples:
+        - name: requisicao
+          payload: {"op": "delete_reservation", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "reservation_id": "27"}
+
+    delete_reservation_response:
+      name: delete_reservation_response
+      summary: 'S → C · resposta ao delete_reservation'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: delete_reservation_response}
+          status: {$ref: '#/components/schemas/status'}
+          message: {$ref: '#/components/schemas/message'}
+        oneOf:
+          - title: '200 · Reserva cancelada com sucesso'
+            type: object
+            properties:
+              status: {const: '200'}
+              message: {const: Reserva cancelada com sucesso}
+          - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_permissao'
+          - $ref: '#/components/schemas/E404_reserva'
+          - $ref: '#/components/schemas/E409_encerrada'
+          - $ref: '#/components/schemas/E500'
+      examples:
+        - name: '200'
+          payload: {"op": "delete_reservation_response", "status": "200", "message": "Reserva cancelada com sucesso"}
+        - name: '400'
+          payload: {"op": "delete_reservation_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: '401'
+          payload: {"op": "delete_reservation_response", "status": "401", "message": "Token invalido ou expirado"}
+        - name: '403'
+          payload: {"op": "delete_reservation_response", "status": "403", "message": "Permissao insuficiente"}
+        - name: '404'
+          payload: {"op": "delete_reservation_response", "status": "404", "message": "Reserva nao encontrada"}
+        - name: '409'
+          payload: {"op": "delete_reservation_response", "status": "409", "message": "Reserva ja encerrada"}
+
+    # ───────────────────────────── Protocolo ────────────────────────────
+    linha_invalida:
+      name: linha_invalida
+      summary: 'C → S · qualquer linha que não é uma requisição reconhecível'
+      contentType: text/plain
+      payload:
+        type: string
+        description: JSON malformado, `op` desconhecida ou linha com mais de 8192 bytes (incluindo o `\n`).
+      examples:
+        - name: JSON malformado
+          payload: '{"op": "login", "email": '
+        - name: op desconhecida
+          payload: '{"op": "reservar_tudo", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9"}'
+
+    error:
+      name: error
+      summary: 'S → C · erro de protocolo (a op original não pôde ser determinada)'
+      payload:
+        type: object
+        required: [op, status, message]
+        properties:
+          op: {type: string, const: error}
+          status: {type: string, const: '400'}
+          message:
+            type: string
+            enum:
+              - Requisicao invalida
+              - Operacao desconhecida
+              - Mensagem excede o tamanho maximo
+      examples:
+        - name: JSON invalido
+          payload: {"op": "error", "status": "400", "message": "Requisicao invalida"}
+        - name: op desconhecida
+          payload: {"op": "error", "status": "400", "message": "Operacao desconhecida"}
+        - name: acima de 8192 bytes
+          payload: {"op": "error", "status": "400", "message": "Mensagem excede o tamanho maximo"}
+
+  schemas:
+    # ─────────────── Dicionário de campos (todos os valores são strings) ───────────────
+    op:
+      type: string
+      pattern: '^[a-z_]{3,30}$'
+      description: 'Operação. Na resposta: op da requisição + "_response"; "error" em falha de parse.'
+      examples: [login, login_response]
+    status:
+      type: string
+      pattern: '^[0-9]{3}$'
+      description: Código numérico da resposta, como string.
+      examples: ['200']
+    message:
+      type: string
+      description: Texto em português, sem acentos e sem emojis, exatamente como definido em cada operação.
+      examples: [Login realizado com sucesso]
+    token:
+      type: string
+      pattern: '^[a-f0-9]{64}$'
+      description: Gerado no login (64 hex minúsculos), invalidado no logout. Obrigatório em toda requisição, exceto register e login.
+      examples: [c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9]
+    user:
+      type: string
+      pattern: '^[a-z]{1,30}$'
+      description: 'Nome de usuário: só letras minúsculas; sem números, espaços, acentos, especiais ou emojis. Único no sistema.'
+      examples: [joao]
+    password:
+      type: string
+      pattern: '^[A-Za-z0-9]{1,20}$'
+      description: Somente letras e números. Nunca aparece em resposta.
+      examples: [senha123]
+    email:
+      type: string
+      pattern: '^[a-z0-9.]+@[a-z0-9]+(\.[a-z]+){1,2}$'
+      description: Único no sistema. Definido no register e não pode ser alterado depois (RNF 5.c).
+      examples: [joao.silva@email.com]
+    role:
+      type: string
+      enum: [user, admin]
+      description: 'Todo register nasce "user". Somente admin altera role.'
+    target_user:
+      type: string
+      pattern: '^[a-z]{1,30}$'
+      description: Usuário ALVO de uma operação admin_*. Nunca identifica o autor da requisição.
+      examples: [maria]
+    room_id:
+      type: string
+      pattern: '^[0-9]{1,10}$'
+      description: Gerado pelo servidor no create_room. Imutável.
+      examples: ['1']
+    name:
+      type: string
+      pattern: '^[A-Za-z0-9 -]{1,30}$'
+      description: Nome da sala, único, sem acentos.
+      examples: [Sala de Estudo B12]
+    capacity:
+      type: string
+      pattern: '^[1-9][0-9]{0,3}$'
+      description: Número de lugares, como string. Limita participants das reservas.
+      examples: ['12']
+    location:
+      type: string
+      pattern: '^[A-Za-z0-9 ,.-]{1,60}$'
+      description: Localização física da sala.
+      examples: [Bloco B - 1 andar]
+    resources:
+      type: array
+      items: {type: string}
+      description: Lista de recursos da sala. Array vazio quando não houver.
+      examples: [[projetor, tv]]
+    room_status:
+      type: string
+      enum: [active, inactive]
+      description: '"inactive" (manutenção) não aceita novas reservas. Nome distinto de status para não colidir com o código da resposta.'
+    reservation_id:
+      type: string
+      pattern: '^[0-9]{1,10}$'
+      description: Gerado pelo servidor no create_reservation. Imutável.
+      examples: ['27']
+    date:
+      type: string
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      description: Formato ISO AAAA-MM-DD. Não se reserva data passada (400).
+      examples: ['2026-09-15']
+    start_time:
+      type: string
+      pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+      description: Hora local do servidor (America/Sao_Paulo), 24 h.
+      examples: ['14:00']
+    end_time:
+      type: string
+      pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+      description: Deve ser maior que start_time e no mesmo dia (400 caso contrário).
+      examples: ['16:00']
+    topic:
+      type: string
+      pattern: '^[A-Za-z0-9 ,.-]{1,60}$'
+      description: Assunto da reserva, sem acentos.
+      examples: [Reuniao de projeto]
+    participants:
+      type: string
+      pattern: '^[1-9][0-9]{0,3}$'
+      description: Não pode exceder a capacity da sala (400).
+      examples: ['6']
+    available:
+      type: string
+      enum: ['true', 'false']
+      description: Booleano como string. Informativo, não reserva a sala.
+    count:
+      type: string
+      pattern: '^[0-9]{1,10}$'
+      description: Quantidade de itens no array devolvido.
+      examples: ['3']
+    created_at:
+      type: string
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2} ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$'
+      description: Data e hora local do servidor.
+      examples: ['2026-09-09 14:32:10']
+    scope:
+      type: string
+      enum: [mine, all]
+      default: mine
+      description: '"mine" (padrão) ou "all" (só admin). ⚠ Não consta no Dicionário da planilha.'
+    min_capacity:
+      type: string
+      pattern: '^[1-9][0-9]{0,3}$'
+      description: Filtro de capacidade mínima. ⚠ Não consta no Dicionário; assumido o formato de capacity.
+      examples: ['6']
+    nao_alterar:
+      title: '"" (não alterar)'
+      type: string
+      const: ''
+      description: Em requisições de atualização, string vazia mantém o valor atual (regra 2.11).
+
+    # ─────────────── Registros devolvidos em listagens ───────────────
+    Usuario:
+      title: Usuário
+      type: object
+      description: Item de `users` (admin_list_users). Nunca contém senha.
+      required: [user, email, role]
+      properties:
+        user: {$ref: '#/components/schemas/user'}
+        email: {$ref: '#/components/schemas/email'}
+        role: {$ref: '#/components/schemas/role'}
+    Sala:
+      title: Sala
+      type: object
+      description: Item de `rooms` (list_rooms). `available` só aparece quando date, start_time e end_time são enviados.
+      required: [room_id, name, capacity, location, resources, room_status]
+      properties:
+        room_id: {$ref: '#/components/schemas/room_id'}
+        name: {$ref: '#/components/schemas/name'}
+        capacity: {$ref: '#/components/schemas/capacity'}
+        location: {$ref: '#/components/schemas/location'}
+        resources: {$ref: '#/components/schemas/resources'}
+        room_status: {$ref: '#/components/schemas/room_status'}
+        available: {$ref: '#/components/schemas/available'}
+    Reserva:
+      title: Reserva
+      type: object
+      description: Item de `reservations` (list_reservations). `name` é o nome da sala; `user` é o dono.
+      required: [reservation_id, room_id, name, user, date, start_time, end_time, topic, participants]
+      properties:
+        reservation_id: {$ref: '#/components/schemas/reservation_id'}
+        room_id: {$ref: '#/components/schemas/room_id'}
+        name: {$ref: '#/components/schemas/name'}
+        user: {$ref: '#/components/schemas/user'}
+        date: {$ref: '#/components/schemas/date'}
+        start_time: {$ref: '#/components/schemas/start_time'}
+        end_time: {$ref: '#/components/schemas/end_time'}
+        topic: {$ref: '#/components/schemas/topic'}
+        participants: {$ref: '#/components/schemas/participants'}
+
+    # ─────────────── Catálogo de respostas de erro (status + message exatos) ───────────────
+    E400_cadastro:
+      title: '400 · Dados de cadastro em formato invalido'
+      type: object
+      properties: {status: {const: '400'}, message: {const: Dados de cadastro em formato invalido}}
+    E400_credenciais:
+      title: '400 · Email ou senha em formato invalido'
+      type: object
+      properties: {status: {const: '400'}, message: {const: Email ou senha em formato invalido}}
+    E400_token:
+      title: '400 · Token em formato invalido'
+      type: object
+      properties: {status: {const: '400'}, message: {const: Token em formato invalido}}
+    E400_dados:
+      title: '400 · Dados em formato invalido'
+      type: object
+      properties: {status: {const: '400'}, message: {const: Dados em formato invalido}}
+    E400_senha:
+      title: '400 · Senha em formato invalido'
+      type: object
+      properties: {status: {const: '400'}, message: {const: Senha em formato invalido}}
+    E400_sala:
+      title: '400 · Dados da sala em formato invalido'
+      type: object
+      properties: {status: {const: '400'}, message: {const: Dados da sala em formato invalido}}
+    E400_reserva:
+      title: '400 · Dados da reserva em formato invalido'
+      type: object
+      properties: {status: {const: '400'}, message: {const: Dados da reserva em formato invalido}}
+    E400_filtros:
+      title: '400 · Filtros em formato invalido'
+      type: object
+      properties: {status: {const: '400'}, message: {const: Filtros em formato invalido}}
+    E401_credenciais:
+      title: '401 · Email ou senha incorretos'
+      type: object
+      properties: {status: {const: '401'}, message: {const: Email ou senha incorretos}}
+    E401_token:
+      title: '401 · Token invalido ou expirado'
+      type: object
+      properties: {status: {const: '401'}, message: {const: Token invalido ou expirado}}
+    E403_permissao:
+      title: '403 · Permissao insuficiente'
+      type: object
+      properties: {status: {const: '403'}, message: {const: Permissao insuficiente}}
+    E403_ultimo_admin:
+      title: '403 · Nao e possivel remover o ultimo administrador'
+      type: object
+      properties: {status: {const: '403'}, message: {const: Nao e possivel remover o ultimo administrador}}
+    E404_usuario:
+      title: '404 · Usuario nao encontrado'
+      type: object
+      properties: {status: {const: '404'}, message: {const: Usuario nao encontrado}}
+    E404_sala:
+      title: '404 · Sala nao encontrada'
+      type: object
+      properties: {status: {const: '404'}, message: {const: Sala nao encontrada}}
+    E404_reserva:
+      title: '404 · Reserva nao encontrada'
+      type: object
+      properties: {status: {const: '404'}, message: {const: Reserva nao encontrada}}
+    E409_cadastrado:
+      title: '409 · Usuario ou email ja cadastrado'
+      type: object
+      properties: {status: {const: '409'}, message: {const: Usuario ou email ja cadastrado}}
+    E409_sessao_ativa:
+      title: '409 · Usuario ja possui sessao ativa'
+      type: object
+      properties: {status: {const: '409'}, message: {const: Usuario ja possui sessao ativa}}
+    E409_usuario_em_uso:
+      title: '409 · Usuario ja esta em uso'
+      type: object
+      properties: {status: {const: '409'}, message: {const: Usuario ja esta em uso}}
+    E409_sala_cadastrada:
+      title: '409 · Sala ja cadastrada'
+      type: object
+      properties: {status: {const: '409'}, message: {const: Sala ja cadastrada}}
+    E409_reservas_ativas:
+      title: '409 · Sala possui reservas ativas'
+      type: object
+      properties: {status: {const: '409'}, message: {const: Sala possui reservas ativas}}
+    E409_periodo:
+      title: '409 · Sala ja reservada no periodo solicitado'
+      type: object
+      properties: {status: {const: '409'}, message: {const: Sala ja reservada no periodo solicitado}}
+    E409_sala_indisponivel:
+      title: '409 · Sala indisponivel para reserva'
+      type: object
+      properties: {status: {const: '409'}, message: {const: Sala indisponivel para reserva}}
+    E409_encerrada:
+      title: '409 · Reserva ja encerrada'
+      type: object
+      properties: {status: {const: '409'}, message: {const: Reserva ja encerrada}}
+    E500:
+      title: '500 · Erro interno do servidor'
+      type: object
+      description: Qualquer operação pode responder 500.
+      properties: {status: {const: '500'}, message: {const: Erro interno do servidor}}

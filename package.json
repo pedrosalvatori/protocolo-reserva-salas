@@ -1,0 +1,15 @@
+{
+  "name": "protocolo-reserva-salas",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Protocolo de troca de mensagens do Sistema Inteligente de Reserva de Salas (AsyncAPI 3.0)",
+  "type": "module",
+  "scripts": {
+    "validate": "node scripts/validate.mjs asyncapi.yaml",
+    "serve": "npx --yes serve -l 3000 ."
+  },
+  "devDependencies": {
+    "@asyncapi/parser": "^3.6.3",
+    "ajv": "^8.20.0"
+  }
+}
