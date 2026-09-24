@@ -34,7 +34,9 @@ de mensagens. A página acima é montada a partir dele: editou o YAML e deu push
 1. Edite o `asyncapi.yaml`. No VS Code, a extensão **AsyncAPI Preview** mostra a prévia (`Ctrl+Shift+P` → `AsyncAPI: Preview`).
 2. Valide com `npm install` e `npm run validate`. O script confere a estrutura com o parser oficial do AsyncAPI
    e valida todos os exemplos contra os esquemas.
-3. Para ver a página na sua máquina: `npm run serve` e abra http://localhost:3000.
+3. Para ver a página na sua máquina, sirva a pasta por HTTP: `python -m http.server 8000` (ou `npm run serve`)
+   e abra http://localhost:8000 (ou http://localhost:3000). Abrir o `index.html` com dois cliques não funciona:
+   o navegador bloqueia os scripts em arquivos locais.
 4. Faça commit e push. O GitHub Actions roda a mesma validação em todo push e pull request, e o GitHub Pages publica a página.
 
 ## Fluxos

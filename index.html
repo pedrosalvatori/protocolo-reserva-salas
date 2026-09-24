@@ -26,12 +26,42 @@
     </div>
   </header>
 
-  <main id="app"><div class="wrapper"><p class="loading">Carregando asyncapi.yaml…</p></div></main>
+  <main id="app"><div class="wrapper"><p class="loading" id="loading">Carregando asyncapi.yaml…</p></div></main>
 
   <footer class="footer wrapper">
     Montada no navegador a partir do <a href="asyncapi.yaml">asyncapi.yaml</a> (AsyncAPI 3.0), com visual inspirado no Swagger UI.
     Sistemas Distribuídos · BCC · UTFPR-PG.
   </footer>
   <noscript><p class="wrapper">Esta documentação precisa de JavaScript. O contrato completo está em <a href="asyncapi.yaml">asyncapi.yaml</a>.</p></noscript>
+  <script>
+    // Script comum (não é módulo): roda mesmo quando o app.js não carrega e explica o que fazer.
+    (function () {
+      var LINK = 'https://pedrosalvatori.github.io/protocolo-reserva-salas/';
+      function help(reason) {
+        if (window.__docsOk || !document.getElementById('loading')) return;
+        var box = document.createElement('div');
+        box.className = 'errors-wrapper';
+        box.setAttribute('role', 'alert');
+        box.innerHTML = '<h4>A documentação não carregou</h4><p class="reason"></p>'
+          + '<p>Abra pelo link: <a href="' + LINK + '">' + LINK + '</a></p>'
+          + '<p>Ou, na pasta do repositório, rode <code>python -m http.server 8000</code> e abra '
+          + '<a href="http://localhost:8000/">http://localhost:8000</a>.</p>';
+        box.querySelector('.reason').textContent = reason;
+        var wrap = document.createElement('div');
+        wrap.className = 'wrapper';
+        wrap.appendChild(box);
+        var app = document.getElementById('app');
+        app.innerHTML = '';
+        app.appendChild(wrap);
+      }
+      if (location.protocol !== 'http:' && location.protocol !== 'https:') {
+        help('O arquivo foi aberto direto do computador (' + location.protocol + '//). Nesse modo o navegador bloqueia os scripts que montam a página.');
+        return;
+      }
+      window.addEventListener('error', function (e) { if (e.message) help('Erro no navegador: ' + e.message); });
+      window.addEventListener('unhandledrejection', function (e) { help('Erro no navegador: ' + ((e.reason && e.reason.message) || e.reason)); });
+      setTimeout(function () { help('A página demorou demais para montar. Recarregue; se continuar, atualize o navegador ou desative extensões que bloqueiam scripts.'); }, 12000);
+    })();
+  </script>
 </body>
 </html>

@@ -691,21 +691,26 @@ async function main() {
     const where = e.mark ? ` (linha ${e.mark.line + 1}, coluna ${e.mark.column + 1})` : '';
     return showError(`Erro ao ler ${SPEC_URL}${where}`, e.reason || e.message);
   }
-  MODEL = buildModel(spec);
-  $('#app').innerHTML = `${infoHtml(spec)}${serversHtml(spec)}
-    <div class="wrapper">
-      <p class="search-status" id="search-status" aria-live="polite"></p>
-      <div id="ops">${MODEL.tags.map(tagHtml).join('')}</div>
-      <div class="empty" id="empty" hidden>Nenhuma operação encontrada. <button class="btn-copy" type="button" id="clear-search">Limpar busca</button></div>
-      ${schemasHtml(spec)}
-    </div>`;
-  for (const t of MODEL.tags) t.el = document.getElementById(`tag-${t.slug}`);
-  for (const o of MODEL.ops) o.el = document.getElementById(`op-${o.id}`);
-  bind();
-  showTokenState();
-  const q0 = new URLSearchParams(location.search).get('q');
-  if (q0) setQuery(q0);
-  route();
+  try {
+    MODEL = buildModel(spec);
+    $('#app').innerHTML = `${infoHtml(spec)}${serversHtml(spec)}
+      <div class="wrapper">
+        <p class="search-status" id="search-status" aria-live="polite"></p>
+        <div id="ops">${MODEL.tags.map(tagHtml).join('')}</div>
+        <div class="empty" id="empty" hidden>Nenhuma operação encontrada. <button class="btn-copy" type="button" id="clear-search">Limpar busca</button></div>
+        ${schemasHtml(spec)}
+      </div>`;
+    for (const t of MODEL.tags) t.el = document.getElementById(`tag-${t.slug}`);
+    for (const o of MODEL.ops) o.el = document.getElementById(`op-${o.id}`);
+    window.__docsOk = true;
+    bind();
+    showTokenState();
+    const q0 = new URLSearchParams(location.search).get('q');
+    if (q0) setQuery(q0);
+    route();
+  } catch (e) {
+    showError(`Erro ao montar a documentação a partir do ${SPEC_URL}`, e.message);
+  }
 }
 
 main();
