@@ -2,6 +2,7 @@
 import { load, CORE_SCHEMA } from './vendor/js-yaml.js';
 import { Marked } from './vendor/marked.js';
 import { validate } from './validator.js';
+import { deref, variantsOf, oneLine } from './contract.js';
 
 const SPEC_URL = 'asyncapi.yaml';
 const LIMIT = 8192;
@@ -14,10 +15,6 @@ const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toL
 const slug = (s) => norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 const has = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 const bytesOf = (s) => new TextEncoder().encode(s).length;
-// Uma mensagem = um objeto JSON em uma linha (mesmo estilo dos exemplos da planilha)
-const oneLine = (v) => Array.isArray(v) ? `[${v.map(oneLine).join(', ')}]`
-  : (v && typeof v === 'object') ? `{${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}: ${oneLine(x)}`).join(', ')}}`
-  : JSON.stringify(v);
 
 function storage(kind) {
   return {
@@ -41,34 +38,6 @@ const ICON = {
   warn: '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 3 2 20h20L12 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="17.3" r="1.2" fill="currentColor"/></svg>',
 };
 
-// ───────────────────────── $ref ─────────────────────────
-function pointer(root, ref) {
-  return ref.replace(/^#\//, '').split('/').map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'))
-    .reduce((o, k) => (o == null ? undefined : o[k]), root);
-}
-function deref(root) {
-  const cache = new Map();
-  const walk = (node) => {
-    if (Array.isArray(node)) return node.map(walk);
-    if (!node || typeof node !== 'object') return node;
-    if (typeof node.$ref === 'string') {
-      const ref = node.$ref;
-      if (cache.has(ref)) return cache.get(ref);
-      const target = pointer(root, ref);
-      if (target === undefined) throw new Error(`$ref não encontrado: ${ref}`);
-      const out = {};
-      cache.set(ref, out);
-      Object.assign(out, walk(target));
-      Object.defineProperty(out, '$name', { value: ref.split('/').pop(), enumerable: false });
-      return out;
-    }
-    const out = {};
-    for (const [k, v] of Object.entries(node)) out[k] = walk(v);
-    return out;
-  };
-  return walk(root);
-}
-
 // ───────────────────────── modelo ─────────────────────────
 // Cor/rótulo de cada operação, no papel do verbo HTTP do Swagger
 const KINDS = { create: 'CREATE', read: 'READ', update: 'UPDATE', delete: 'DELETE', auth: 'AUTH', error: 'ERROR' };
@@ -88,24 +57,6 @@ const ACCESS = {
   dono: { text: 'dono da reserva', lock: true, pill: 'dono' },
   'dono-ou-admin': { text: 'dono da reserva ou admin', lock: true, pill: 'dono/admin' },
 };
-
-function variantsOf(msg) {
-  const p = msg?.payload;
-  if (!p) return [];
-  if (Array.isArray(p.oneOf)) {
-    return p.oneOf.map((v) => ({
-      status: v.properties?.status?.const,
-      message: v.properties?.message?.const,
-      extras: Object.keys(v.properties || {}).filter((k) => k !== 'status' && k !== 'message'),
-      arrays: Object.entries(v.properties || {}).filter(([, s]) => s.type === 'array').map(([k]) => k),
-      // restrições do envelope + da variante, para validar uma resposta contra esta variante
-      schema: { ...v, required: [...new Set([...(p.required || []), ...(v.required || [])])], properties: { ...p.properties, ...v.properties } },
-      name: v.$name || null,
-    }));
-  }
-  const st = p.properties?.status?.const;
-  return (p.properties?.message?.enum || []).map((m) => ({ status: st, message: m, extras: [], arrays: [], schema: null, name: null }));
-}
 
 let MODEL = null;
 const OPS = new Map();
@@ -236,6 +187,8 @@ function infoHtml(spec) {
   </div></section>`;
 }
 
+const testerCommand = (ip, port) => `node scripts/testar-servidor.mjs ${String(ip).replace(/[^A-Za-z0-9.:-]/g, '') || '127.0.0.1'} ${String(port).replace(/\D/g, '').slice(0, 5) || '5000'}`;
+
 function serversHtml(spec) {
   const srv = Object.values(spec.servers || {})[0] || {};
   const xt = srv['x-transporte'] || {};
@@ -251,6 +204,10 @@ function serversHtml(spec) {
       <span class="schemes-title">Servidor</span>
       <div class="server-input"><span>${esc(proto)}://</span><input id="srv-ip" value="${esc(ip)}" aria-label="IP do servidor" spellcheck="false" autocomplete="off"><span>:</span><input id="srv-port" value="${esc(port)}" aria-label="Porta do servidor" inputmode="numeric" autocomplete="off"></div>
       <div class="transport">${Object.entries(xt).map(([k, v]) => `<span>${esc((label[k] || ((x) => `${k}: ${x}`))(v))}</span>`).join('')}</div>
+      <div class="tester">
+        <span class="schemes-title">Testar este servidor <span class="muted">(no terminal, na pasta do repositório; a página não abre conexão TCP)</span></span>
+        <div class="tester-cmd"><code id="tester-cmd">${esc(testerCommand(ip, port))}</code><button class="btn-copy" type="button" data-copy-from="tester-cmd">Copiar</button></div>
+      </div>
     </div>
     <div class="auth-input">
       <label for="auth-token">${ICON.lock} Token da sessão <span class="muted">(usado no Try it out)</span></label>
@@ -695,6 +652,8 @@ function bind() {
     if (t.matches('.req-text')) updateTry(t.closest('.opblock'));
     if (t.id === 'srv-ip' || t.id === 'srv-port') {
       local.set(t.id === 'srv-ip' ? 'ip' : 'porta', t.value.trim());
+      const { ip, port } = server();
+      $('#tester-cmd').textContent = testerCommand(ip, port);
       for (const el of $$('.opblock.is-open')) updateTry(el);
     }
     if (t.id === 'auth-token') { session.set('token', t.value.trim()); showTokenState(); }

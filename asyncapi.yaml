@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.2.0
+  version: 2.3.0
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídosprotocolo-mermaid.md · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -63,6 +63,9 @@ info:
       um recebe 200 e o outro 409.
     - **3.12** (v2.2) **Ordem fixa no login:** formato (400) → credenciais (401) → sessão ativa (409). O 409 só aparece com
       email e senha corretos, para não revelar quais contas existem ou estão online.
+    - **3.13** (v2.3) **Remover uma conta apaga tudo dela.** `delete_user` e `admin_delete_user` apagam o cadastro, encerram a
+      sessão e apagam **todas** as reservas do usuário (passadas e futuras). O `user` e o `email` ficam livres: um novo
+      `register` com os mesmos dados responde 201. Assim ninguém herda reservas ou histórico de uma conta removida.
 
     Cada operação indica o nível de acesso na extensão `x-acesso`: `publico` (sem token), `logado`,
     `admin`, `dono` (dono da reserva) ou `dono-ou-admin`.
@@ -112,6 +115,11 @@ info:
 
     ## 8. Histórico de versões
 
+    - **2.3.0** (remoção de conta; nenhuma mensagem mudou)
+      - `delete_user` e `admin_delete_user` apagam o cadastro, a sessão e todas as reservas do usuário; o `user` e o `email`
+        ficam livres para um novo cadastro (regra 3.13). Antes só as reservas futuras eram canceladas, e um novo cadastro
+        com o mesmo `user` podia herdar as reservas antigas.
+      - Testador automático do servidor: `node scripts/testar-servidor.mjs` (ver README).
     - **2.2.0** (sessão e login; nenhuma mensagem mudou, só regras)
       - Logout depois de inatividade: o cliente reconecta e reenvia, e só descarta o token com o `logout_response` (regras 1.11 e 3.10).
       - Login simultâneo não cria duas sessões: checar e criar a sessão na mesma seção crítica (regra 3.11).
@@ -123,18 +131,20 @@ info:
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   x-novidades:
-    versao: 2.2.0
+    versao: 2.3.0
     data: 07/10/2026
-    titulo: Ajustes no protocolo (versões 2.1 e 2.2)
+    titulo: Ajustes no protocolo (versões 2.1, 2.2 e 2.3)
     itens:
       - '**E-mail (2.1):** aceita `.com.br`, `.edu.br` e domínios com vários níveis, como `alunos.utfpr.edu.br`, além de hífen no domínio e `_` antes do @.'
       - '**Senha errada no `delete_user` (2.1):** responde **403 "Senha incorreta"** e a sessão continua. Antes era 401, que fazia o cliente sair sem o servidor encerrar o token, e o login seguinte ficava bloqueado (409) por até 30 min.'
       - '**Logout depois de 5 min parado (2.2):** a conexão pode ter sido fechada por inatividade. O cliente reconecta, reenvia o logout e só descarta o token quando recebe a resposta.'
       - '**Login simultâneo (2.2):** checar a sessão e criar o token na mesma seção crítica. Dois logins ao mesmo tempo na mesma conta: um recebe 200 e o outro 409.'
       - '**Ordem no login (2.2):** formato (400) → senha (401) → sessão ativa (409). O 409 só aparece com a senha certa, para não revelar quais contas existem.'
+      - '**Remover a conta (2.3):** `delete_user` e `admin_delete_user` apagam o cadastro, a sessão e todas as reservas do usuário. O `user` e o `email` ficam livres para outra pessoa se cadastrar com os mesmos dados.'
+      - '**Testador automático (novo):** `node scripts/testar-servidor.mjs IP PORTA` roda mais de 70 testes contra o servidor de vocês e aponta o que está fora do contrato. Veja o README.'
     o_que_mudar:
       - '**Cliente e servidor:** trocar a regex de e-mail.'
-      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock.'
+      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas.'
       - '**Cliente:** tratar o 403 do `delete_user` sem descartar o token; reconectar e reenviar quando o socket estiver fechado; só descartar o token depois do `logout_response`.'
   contact:
     name: Pedro Silveira e Daniel Jesus
@@ -333,7 +343,8 @@ operations:
       - Senha incorreta → **403 "Senha incorreta"**: nada é removido e a sessão continua (v2.1, regra 3.9).
         Antes era 401, o que fazia o cliente descartar um token que o servidor mantinha ativo,
         e o login seguinte respondia 409 por até 30 min.
-      - Com a senha certa, o token é invalidado junto e as reservas futuras do usuário são canceladas.
+      - Com a senha certa, o servidor apaga o cadastro, invalida o token e apaga todas as reservas do usuário,
+        passadas e futuras (v2.3, regra 3.13). O `user` e o `email` ficam livres para um novo `register`.
       - Remoção de outro usuário: `admin_delete_user`.
     tags: [{$ref: '#/components/tags/usuario'}]
     messages: [{$ref: '#/channels/conexao/messages/delete_user'}]
@@ -394,7 +405,8 @@ operations:
     summary: Remove qualquer usuário. Requer role admin.
     description: |
       - Remover o último administrador → 403 "Nao e possivel remover o ultimo administrador".
-      - A sessão do usuário removido é encerrada e suas reservas futuras são canceladas.
+      - Apaga o cadastro, encerra a sessão do usuário removido e apaga todas as reservas dele, passadas e futuras
+        (v2.3, regra 3.13). O `user` e o `email` ficam livres para um novo `register`.
     tags: [{$ref: '#/components/tags/admin'}]
     messages: [{$ref: '#/channels/conexao/messages/admin_delete_user'}]
     reply:

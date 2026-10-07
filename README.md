@@ -29,6 +29,46 @@ de mensagens. A página acima é montada a partir dele: editou o YAML e deu push
   ou PowerShell para mandar ao seu servidor e valida a resposta que ele devolveu. Cole o token do `login` em
   **Token da sessão** para ele entrar nas próximas mensagens.
 
+## Testar o servidor de vocês
+
+O navegador não abre conexão TCP, então o teste roda no terminal. Precisa só do Node 18 ou mais novo,
+sem `npm install`:
+
+```
+git clone https://github.com/pedrosalvatori/protocolo-reserva-salas.git
+cd protocolo-reserva-salas
+node scripts/testar-servidor.mjs
+```
+
+O testador pergunta o IP, a porta e, se quiser, uma conta de admin já cadastrada no servidor (`email:senha`).
+Também dá para passar direto:
+
+```
+node scripts/testar-servidor.mjs 127.0.0.1 5000 --admin admin@email.com:senha123
+```
+
+Ele roda mais de 70 testes e confere cada resposta contra o `asyncapi.yaml`, inclusive o texto exato da
+`message`. Os testes cobrem:
+
+- formato e erros de protocolo;
+- cadastro, login, token e próprio cadastro;
+- administrador e salas (precisam da conta de admin);
+- reservas, incluindo duas reservas no mesmo horário ao mesmo tempo, que testa o lock por sala;
+- sessão, incluindo dois logins simultâneos;
+- remoção de conta.
+
+Cada falha mostra o que veio e o que era esperado. No fim, o testador apaga os usuários, a sala e as reservas
+que criou.
+
+Para mandar mensagens à mão e ver cada resposta validada, use o modo interativo:
+
+```
+node scripts/testar-servidor.mjs 127.0.0.1 5000 --interativo
+```
+
+Nele você digita uma linha JSON ou só o nome da operação (ex.: `login`), e o testador manda o exemplo do
+contrato, reaproveitando o token do último login.
+
 ## Editando o protocolo
 
 1. Edite o `asyncapi.yaml`. No VS Code, a extensão **AsyncAPI Preview** mostra a prévia (`Ctrl+Shift+P` → `AsyncAPI: Preview`).
@@ -149,6 +189,16 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 
 ## Versões
 
+### 2.3.0 (remoção de conta)
+
+- **Remover uma conta apaga tudo dela.** `delete_user` e `admin_delete_user` apagam o cadastro, encerram a sessão
+  e apagam **todas** as reservas do usuário, passadas e futuras. O `user` e o `email` ficam livres, e outra pessoa
+  pode se cadastrar com os mesmos dados (201). Antes só as reservas futuras eram canceladas, e um novo cadastro com
+  o mesmo `user` podia herdar as reservas antigas, inclusive ler e cancelar o que não era dele (regra 3.13).
+- **Testador automático:** `node scripts/testar-servidor.mjs` (ver "Testar o servidor de vocês").
+
+O que cada grupo precisa mudar: no servidor, apagar cadastro, sessão e todas as reservas ao remover uma conta.
+
 ### 2.2.0 (sessão e login)
 
 Nenhuma mensagem mudou, só regras de comportamento:
@@ -191,8 +241,10 @@ Versão da planilha *Protocolo de troca de Mensagens*.
 ```
 asyncapi.yaml            contrato do protocolo (fonte da verdade)
 index.html, assets/      documentação no estilo Swagger, montada no navegador a partir do YAML
-assets/validator.js      validador do Try it out (o CI confere que ele concorda com o Ajv)
+assets/validator.js      validador do Try it out e do testador (o CI confere que ele concorda com o Ajv)
+assets/contract.js       leitura do contrato, usada pela página e pelo testador
 assets/vendor/           js-yaml e marked (licença MIT)
+scripts/testar-servidor.mjs  testador do servidor por TCP (bateria completa ou modo interativo)
 scripts/validate.mjs     validação da especificação e dos exemplos
 .github/workflows/       CI: npm run validate em todo push e pull request
 ```
