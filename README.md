@@ -142,12 +142,29 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 4. **`scope` e `min_capacity`** aparecem nas mensagens, mas não no Dicionário. No contrato ficou `scope` ∈ {mine, all} e `min_capacity` no formato de `capacity`.
 5. **`resources` em atualização:** a regra 2.11 (`""` = não alterar) não cobre arrays. `[]` esvazia a lista ou mantém?
 6. **Precedência de erros** não definida. Um usuário comum que envia `create_room` inválido recebe 400 ou 403?
-7. **Sessão presa:** se o cliente perder o token sem fazer logout (app fechado, travamento), um novo login responde 409 por até 30 min, e o logout exige o token perdido. A senha de confirmação errada já não causa isso (v2.1); o caso do app fechado continua em aberto.
+7. **Sessão presa:** se o cliente perder o token sem fazer logout (app fechado, travamento), um novo login responde 409 por até 30 min, e o logout exige o token perdido. A senha de confirmação errada (v2.1) e o logout depois de inatividade (v2.2) já não causam isso; o caso do app fechado continua em aberto.
 8. **Maiúsculas:** a regra 2.12 diz que `user` e `email` são gravados em minúsculas, mas as regex rejeitam maiúsculas. Converter ou responder 400?
 9. **Estados de sala:** uma nota na planilha cita "fechada para limpeza, ocupado", mas `room_status` só aceita `active` e `inactive`.
 10. **`update_reservation` pelo admin:** `read_reservation` e `delete_reservation` dizem que o admin age sobre qualquer reserva; `update_reservation` não diz. No contrato ficou só o dono.
 
 ## Versões
+
+### 2.2.0 (sessão e login)
+
+Nenhuma mensagem mudou, só regras de comportamento:
+
+- **Logout depois de 5 min parado não deixa mais a sessão presa.** O servidor fecha a conexão após 300 s sem
+  mensagens. Se o cliente mandava o logout no socket fechado e descartava o token sem resposta, o servidor
+  mantinha a sessão e o login seguinte respondia 409. Agora o cliente reconecta e reenvia (regra 1.11), e só
+  descarta o token depois de receber o `logout_response` (regra 3.10).
+- **Login simultâneo não cria duas sessões.** Checar se há sessão ativa e criar o token acontecem na mesma
+  seção crítica (lock por usuário ou restrição UNIQUE no banco). Com dois logins ao mesmo tempo, um recebe
+  200 e o outro 409 (regra 3.11).
+- **O login não revela mais quais contas existem.** Ordem obrigatória: formato (400) → credenciais (401) →
+  sessão ativa (409). O 409 só aparece com email e senha corretos (regra 3.12).
+
+O que cada grupo precisa mudar: no servidor, a ordem do login e o lock da sessão; no cliente, reconectar e
+reenviar quando o socket estiver fechado, e só descartar o token depois do `logout_response`.
 
 ### 2.1.0
 

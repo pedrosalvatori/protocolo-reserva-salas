@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.1.0
+  version: 2.2.0
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídosprotocolo-mermaid.md · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -27,6 +27,7 @@ info:
     | 1.8 | Nome da resposta | `op` da resposta = `op` da requisição + `_response` (ex.: `login` → `login_response`). |
     | 1.9 | Conexão | Mantida durante a sessão. Com 300 s de inatividade o servidor fecha a conexão, mas **não** invalida o token. |
     | 1.10 | Ordem dos campos | Irrelevante: o receptor nunca depende da ordem das chaves. |
+    | 1.11 | Reconexão (v2.2) | Se a conexão caiu ou foi fechada por inatividade, o cliente abre outra e reenvia a requisição com o mesmo token. Requisição sem resposta não conta como concluída. |
 
     ## 2. Regras das chaves
 
@@ -55,6 +56,13 @@ info:
     - **3.9** (v2.1) **401 significa que o servidor não tem sessão ativa para aquele token** (ausente, inválido,
       expirado ou invalidado) ou, no `login`, que as credenciais estão erradas. Por isso o cliente pode descartar
       o token ao receber 401. Senha de confirmação errada com token válido (`delete_user`) responde **403**, e a sessão continua.
+    - **3.10** (v2.2) **Logout só termina com resposta.** O cliente só descarta o token depois de receber o `logout_response`
+      (200, ou 401 se o token já não valia). Se a conexão tiver caído, reconecta e reenvia o logout (regra 1.11).
+    - **3.11** (v2.2) **Sessão única sem corrida.** Verificar se há sessão ativa e criar o token acontecem na mesma seção
+      crítica (lock por usuário ou restrição UNIQUE de sessão por usuário no banco). Com dois logins simultâneos corretos,
+      um recebe 200 e o outro 409.
+    - **3.12** (v2.2) **Ordem fixa no login:** formato (400) → credenciais (401) → sessão ativa (409). O 409 só aparece com
+      email e senha corretos, para não revelar quais contas existem ou estão online.
 
     Cada operação indica o nível de acesso na extensão `x-acesso`: `publico` (sem token), `logado`,
     `admin`, `dono` (dono da reserva) ou `dono-ou-admin`.
@@ -67,6 +75,7 @@ info:
 
     Ordem sugerida de validação (a planilha não fixa a precedência, ver pendência 6):
     tamanho → JSON → `op` → campos e regex (400) → token (401) → permissão (403) → existência (404) → conflito (409) → executa (200/201).
+    No `login` a ordem é obrigatória desde a v2.2 (regra 3.12).
 
     ## 5. Concorrência
 
@@ -96,19 +105,37 @@ info:
     4. **`scope` e `min_capacity`** aparecem nas mensagens, mas não no Dicionário. Aqui: `scope` ∈ {mine, all}; `min_capacity` no formato de `capacity`.
     5. **`resources` em atualização**: a regra 2.11 (`""` = não alterar) não cobre arrays. `[]` esvazia a lista ou mantém?
     6. **Precedência de erros** não definida (ex.: usuário comum enviando `create_room` inválido recebe 400 ou 403?). Importa para testes entre grupos.
-    7. **Sessão presa**: se o cliente perder o token sem fazer logout (app fechado, travamento), um novo login responde 409 por até 30 min, e o logout exige o token perdido. A v2.1 tirou a senha de confirmação errada dessa lista (regra 3.9); o caso do app fechado continua em aberto.
+    7. **Sessão presa**: se o cliente perder o token sem fazer logout (app fechado, travamento), um novo login responde 409 por até 30 min, e o logout exige o token perdido. A v2.1 tirou dessa lista a senha de confirmação errada (regra 3.9) e a v2.2 o logout depois de inatividade (regras 1.11 e 3.10); o caso do app fechado continua em aberto.
     8. **Maiúsculas**: a regra 2.12 diz que `user`/`email` são gravados em minúsculas, mas as regex rejeitam maiúsculas. Converter ou responder 400?
     9. **Estados de sala**: uma nota na aba *Msg Salas* cita "fechada para limpeza, ocupado", mas `room_status` só aceita `active`/`inactive`.
     10. **`update_reservation` pelo admin**: `read_reservation` e `delete_reservation` dizem que o admin age sobre qualquer reserva; `update_reservation` não diz. Aqui ficou `x-acesso: dono`.
 
     ## 8. Histórico de versões
 
+    - **2.2.0** (sessão e login; nenhuma mensagem mudou, só regras)
+      - Logout depois de inatividade: o cliente reconecta e reenvia, e só descarta o token com o `logout_response` (regras 1.11 e 3.10).
+      - Login simultâneo não cria duas sessões: checar e criar a sessão na mesma seção crítica (regra 3.11).
+      - Ordem fixa no login, 400 → 401 → 409, para o 409 não revelar contas (regra 3.12).
     - **2.1.0**
       - `email` aceita domínios com vários níveis e com hífen (`.com.br`, `.edu.br`, `alunos.utfpr.edu.br`, `meu-provedor.com.br`)
         e `_` ou `-` antes do `@`. A terminação do domínio passa a exigir 2 letras ou mais.
         Todo e-mail válido na 2.0 continua válido, exceto os com terminação de 1 letra.
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
+  x-novidades:
+    versao: 2.2.0
+    data: 07/10/2026
+    titulo: Ajustes no protocolo (versões 2.1 e 2.2)
+    itens:
+      - '**E-mail (2.1):** aceita `.com.br`, `.edu.br` e domínios com vários níveis, como `alunos.utfpr.edu.br`, além de hífen no domínio e `_` antes do @.'
+      - '**Senha errada no `delete_user` (2.1):** responde **403 "Senha incorreta"** e a sessão continua. Antes era 401, que fazia o cliente sair sem o servidor encerrar o token, e o login seguinte ficava bloqueado (409) por até 30 min.'
+      - '**Logout depois de 5 min parado (2.2):** a conexão pode ter sido fechada por inatividade. O cliente reconecta, reenvia o logout e só descarta o token quando recebe a resposta.'
+      - '**Login simultâneo (2.2):** checar a sessão e criar o token na mesma seção crítica. Dois logins ao mesmo tempo na mesma conta: um recebe 200 e o outro 409.'
+      - '**Ordem no login (2.2):** formato (400) → senha (401) → sessão ativa (409). O 409 só aparece com a senha certa, para não revelar quais contas existem.'
+    o_que_mudar:
+      - '**Cliente e servidor:** trocar a regex de e-mail.'
+      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock.'
+      - '**Cliente:** tratar o 403 do `delete_user` sem descartar o token; reconectar e reenviar quando o socket estiver fechado; só descartar o token depois do `logout_response`.'
   contact:
     name: Pedro Silveira e Daniel Jesus
     url: https://github.com/pedrosalvatori/protocolo-reserva-salas
@@ -233,8 +260,12 @@ operations:
     x-acesso: publico
     summary: Autentica por email e senha e devolve token e role.
     description: |
-      - Credenciais corretas: o servidor gera e grava o token e devolve `token` e `role`.
+      - Ordem obrigatória (v2.2, regra 3.12): formato (400) → credenciais (401) → sessão ativa (409).
       - Usuário inexistente e senha errada devolvem a **mesma** mensagem 401, para não revelar quais usuários existem.
+        Por causa da ordem acima, o 409 só aparece com email e senha corretos.
+      - Credenciais corretas e sem sessão ativa: o servidor gera e grava o token e devolve `token` e `role`.
+        A checagem de sessão e a criação do token ficam na mesma seção crítica (v2.2, regra 3.11):
+        com dois logins simultâneos, um recebe 200 e o outro 409.
       - Sessão ativa → 409 (fazer logout ou aguardar a expiração de 30 min).
     tags: [{$ref: '#/components/tags/autenticacao'}]
     messages: [{$ref: '#/channels/conexao/messages/login'}]
@@ -250,7 +281,9 @@ operations:
     summary: Invalida o token da sessão.
     description: |
       - O servidor busca o token no banco e o invalida. Token já invalidado → 401.
-      - Após o 200 o cliente descarta o token e volta à tela de login.
+      - O cliente só descarta o token ao receber o `logout_response` (200 ou 401) e então volta à tela de login (v2.2, regra 3.10).
+      - Se a conexão tiver sido fechada por inatividade (300 s), o cliente reconecta e reenvia o logout (regra 1.11).
+        Descartar o token sem resposta deixa a sessão ativa no servidor e bloqueia o login seguinte com 409.
     tags: [{$ref: '#/components/tags/autenticacao'}]
     messages: [{$ref: '#/channels/conexao/messages/logout'}]
     reply:

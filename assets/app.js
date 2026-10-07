@@ -38,6 +38,7 @@ const ICON = {
   unlock: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M5 7V5a3 3 0 0 1 5.8-1.1" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="7" width="10" height="8" rx="1.5" fill="currentColor"/></svg>',
   chevron: '<svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
   copy: '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M11 3.5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 3 2 20h20L12 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="17.3" r="1.2" fill="currentColor"/></svg>',
 };
 
 // ───────────────────────── $ref ─────────────────────────
@@ -187,6 +188,31 @@ function exampleFor(o, v) {
   const obj = { op: o.res.payload?.properties?.op?.const ?? o.res.name, status: v.status, message: v.message };
   for (const k of v.extras) obj[k] = '…';
   return oneLine(obj);
+}
+
+// Aviso de ajustes no topo, lido de info.x-novidades; recolhido por versão
+function noticeHtml(spec) {
+  const n = spec.info?.['x-novidades'];
+  if (!n || !Array.isArray(n.itens) || !n.itens.length) return '';
+  const collapsed = local.get('aviso-recolhido') === String(n.versao);
+  const todo = Array.isArray(n.o_que_mudar) && n.o_que_mudar.length
+    ? `<p class="notice-todo-title">O que cada grupo precisa mudar</p><ul class="notice-todo">${n.o_que_mudar.map((i) => `<li>${mdInline(i)}</li>`).join('')}</ul>`
+    : '';
+  return `<section class="notice wrapper${collapsed ? ' is-collapsed' : ''}" aria-labelledby="notice-title" data-versao="${esc(n.versao)}">
+    <div class="notice-box">
+      <div class="notice-icon">${ICON.warn}</div>
+      <div class="notice-body">
+        <p class="notice-kicker">Atualização do protocolo · versão ${esc(n.versao)}${n.data ? ` · ${esc(n.data)}` : ''}</p>
+        <h2 id="notice-title">${esc(n.titulo || 'Ajustes no protocolo')}</h2>
+        <div class="notice-details">
+          <ul>${n.itens.map((i) => `<li>${mdInline(i)}</li>`).join('')}</ul>
+          ${todo}
+          <p class="notice-more"><a href="#regras" data-open-history>Ver o histórico de versões completo</a></p>
+        </div>
+      </div>
+      <button class="notice-toggle" type="button" aria-expanded="${!collapsed}">${collapsed ? 'Mostrar detalhes' : 'Ocultar detalhes'}</button>
+    </div>
+  </section>`;
 }
 
 function infoHtml(spec) {
@@ -647,6 +673,21 @@ function bind() {
       else $('.res-result', o.el).innerHTML = resultHtml(checkResponse(o, $('.res-text', o.el).value));
       return;
     }
+    const toggle = t.closest('.notice-toggle');
+    if (toggle) {
+      const box = toggle.closest('.notice');
+      const collapsed = box.classList.toggle('is-collapsed');
+      toggle.textContent = collapsed ? 'Mostrar detalhes' : 'Ocultar detalhes';
+      toggle.setAttribute('aria-expanded', String(!collapsed));
+      local.set('aviso-recolhido', collapsed ? box.dataset.versao : '');
+      return;
+    }
+    if (t.closest('[data-open-history]')) {
+      e.preventDefault();
+      const hist = $$('.rules details').find((d) => /hist[oó]rico/i.test(d.querySelector('summary')?.textContent || ''));
+      if (hist) { hist.open = true; hist.scrollIntoView({ block: 'start' }); }
+      return;
+    }
     if (t.id === 'clear-search') setQuery('');
   });
   app.addEventListener('input', (e) => {
@@ -693,7 +734,7 @@ async function main() {
   }
   try {
     MODEL = buildModel(spec);
-    $('#app').innerHTML = `${infoHtml(spec)}${serversHtml(spec)}
+    $('#app').innerHTML = `${noticeHtml(spec)}${infoHtml(spec)}${serversHtml(spec)}
       <div class="wrapper">
         <p class="search-status" id="search-status" aria-live="polite"></p>
         <div id="ops">${MODEL.tags.map(tagHtml).join('')}</div>

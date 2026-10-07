@@ -46,6 +46,24 @@ code { font-family: var(--mono); font-size: 12.5px; background: rgba(0, 0, 0, .0
 .topbar-link { font-weight: 700; font-size: 13px; color: var(--text); text-decoration: none; padding: 7px 12px; border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; }
 .topbar-link:hover { border-color: var(--text); }
 
+/* aviso de ajustes no protocolo */
+.notice { margin-top: 24px; }
+.notice-box { display: flex; align-items: flex-start; gap: 16px; padding: 18px 20px; border: 1px solid #f0b429; border-radius: 6px; background: #fffbea; box-shadow: 0 1px 3px rgba(0, 0, 0, .08); }
+.notice-icon { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: #f0b429; color: #3b2a00; }
+.notice-body { flex: 1; min-width: 0; }
+.notice-kicker { margin: 0; color: #8a5a00; font: 700 11.5px var(--sans); letter-spacing: .06em; text-transform: uppercase; }
+.notice h2 { margin: 2px 0 10px; font-size: 21px; }
+.notice ul { margin: 0; padding-left: 20px; }
+.notice li { margin: 5px 0; }
+.notice-todo-title { margin: 14px 0 6px; font-weight: 700; }
+.notice ul.notice-todo { padding: 8px 14px 8px 32px; border-radius: 4px; background: rgba(240, 180, 41, .16); }
+.notice-more { margin: 12px 0 0; }
+.notice-toggle { flex: none; padding: 5px 12px; border: 1px solid #d9a21b; border-radius: 4px; background: #fff; color: #6b4600; font: 700 12px var(--sans); cursor: pointer; }
+.notice-toggle:hover { background: #fff3c4; }
+.notice.is-collapsed .notice-details { display: none; }
+.notice.is-collapsed .notice-box { align-items: center; }
+.notice.is-collapsed h2 { margin-bottom: 0; }
+
 /* informações */
 .info { margin: 44px 0 28px; }
 .info .title { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 10px; margin: 0; font-size: 36px; font-weight: 700; line-height: 1.2; }
@@ -237,6 +255,10 @@ td.used a { font-family: var(--mono); }
 .footer { margin-top: 30px; padding-block: 24px 40px; border-top: 1px solid #eee; color: var(--muted); font-size: 12.5px; }
 
 @media (max-width: 720px) {
+  .notice-box { flex-wrap: wrap; gap: 12px; padding: 14px; }
+  .notice-icon { width: 36px; height: 36px; }
+  .notice-body { flex-basis: calc(100% - 52px); }
+  .notice-toggle { margin-left: 48px; }
   .info .title { font-size: 28px; }
   .opblock-summary-method { min-width: 68px; font-size: 12px; }
   .opblock-summary-path { font-size: 14px; }
