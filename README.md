@@ -137,15 +137,37 @@ sequenceDiagram
 Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementações de grupos diferentes:
 
 1. **Token ausente:** a regra 2.10 manda responder 400 (campo obrigatório ausente), mas a aba *Códigos de Status* lista "token ausente" como 401.
-2. **`delete_user` com senha incorreta** responde 401, mas não há `message` definida para esse caso.
+2. **Resolvida na v2.1.** `delete_user` com senha incorreta respondia 401, o que fazia o cliente descartar um token que o servidor mantinha ativo. Agora responde 403 "Senha incorreta".
 3. **`update_room` reduzindo `capacity`** abaixo dos `participants` de uma reserva futura responde 409, sem `message` definida.
 4. **`scope` e `min_capacity`** aparecem nas mensagens, mas não no Dicionário. No contrato ficou `scope` ∈ {mine, all} e `min_capacity` no formato de `capacity`.
 5. **`resources` em atualização:** a regra 2.11 (`""` = não alterar) não cobre arrays. `[]` esvazia a lista ou mantém?
 6. **Precedência de erros** não definida. Um usuário comum que envia `create_room` inválido recebe 400 ou 403?
-7. **Sessão presa:** se a conexão cair e o cliente perder o token, um novo login responde 409 por até 30 min, e o logout exige o token perdido.
+7. **Sessão presa:** se o cliente perder o token sem fazer logout (app fechado, travamento), um novo login responde 409 por até 30 min, e o logout exige o token perdido. A senha de confirmação errada já não causa isso (v2.1); o caso do app fechado continua em aberto.
 8. **Maiúsculas:** a regra 2.12 diz que `user` e `email` são gravados em minúsculas, mas as regex rejeitam maiúsculas. Converter ou responder 400?
 9. **Estados de sala:** uma nota na planilha cita "fechada para limpeza, ocupado", mas `room_status` só aceita `active` e `inactive`.
 10. **`update_reservation` pelo admin:** `read_reservation` e `delete_reservation` dizem que o admin age sobre qualquer reserva; `update_reservation` não diz. No contrato ficou só o dono.
+
+## Versões
+
+### 2.1.0
+
+- **E-mail com `.com.br` e domínios institucionais.** A regex do `email` passou a ser
+  `^[a-z0-9._-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$`. Ela aceita domínios com vários níveis e hífen
+  (`joao@empresa.com.br`, `maria@alunos.utfpr.edu.br`, `ana@meu-provedor.com.br`) e `_` ou `-` antes do `@`.
+  Todo e-mail válido na 2.0 continua válido, exceto os com terminação de 1 letra (`joao@email.c`).
+- **Senha errada não derruba mais a sessão.** No `delete_user`, a senha de confirmação errada respondia 401.
+  O cliente, seguindo a regra do 401, descartava o token e voltava ao login, mas o servidor mantinha a sessão
+  ativa, e o login seguinte respondia 409 por até 30 min. Agora a resposta é **403 "Senha incorreta"**, nada
+  é removido e a sessão continua.
+- **Regra nova (3.9):** 401 só quando o servidor não tem sessão ativa para aquele token, ou no `login` com
+  credenciais erradas. Assim o cliente sempre pode descartar o token ao receber 401.
+
+O que cada grupo precisa mudar: a regex de e-mail no cliente e no servidor; no servidor, responder 403
+"Senha incorreta" no `delete_user`; no cliente, tratar esse 403 sem descartar o token.
+
+### 2.0.0
+
+Versão da planilha *Protocolo de troca de Mensagens*.
 
 ## Estrutura
 

@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.0.0
+  version: 2.1.0
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídosprotocolo-mermaid.md · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -52,6 +52,9 @@ info:
     - **3.6** Perfis (`role`): `user` e `admin`. Todo `register` nasce `user`.
     - **3.7** Operações `admin_*` e criar/alterar/remover sala exigem `admin`. Token válido sem permissão → 403.
     - **3.8** O autor é identificado **pelo token**; o cliente nunca envia o próprio `user` para dizer quem é.
+    - **3.9** (v2.1) **401 significa que o servidor não tem sessão ativa para aquele token** (ausente, inválido,
+      expirado ou invalidado) ou, no `login`, que as credenciais estão erradas. Por isso o cliente pode descartar
+      o token ao receber 401. Senha de confirmação errada com token válido (`delete_user`) responde **403**, e a sessão continua.
 
     Cada operação indica o nível de acesso na extensão `x-acesso`: `publico` (sem token), `logado`,
     `admin`, `dono` (dono da reserva) ou `dono-ou-admin`.
@@ -79,8 +82,8 @@ info:
     | 200 | OK | Sucesso em leitura, atualização, remoção, login e logout. | Segue o fluxo e atualiza a tela. |
     | 201 | Created | Recurso criado: `register`, `create_room`, `create_reservation`. | Confirma e guarda o id devolvido. |
     | 400 | Bad Request | Campo ausente, nulo, tipo inválido, regex reprovada, JSON inválido, mensagem acima do limite. | Mostra o erro e mantém o formulário preenchido. |
-    | 401 | Unauthorized | Credenciais incorretas; token ausente, inválido, expirado ou invalidado. | Descarta o token e volta ao login. |
-    | 403 | Forbidden | Token válido sem permissão: usuário comum em op de admin, reserva de terceiro, último admin. | Informa a falta de permissão; não repete. |
+    | 401 | Unauthorized | Token ausente, inválido, expirado ou invalidado (o servidor não tem sessão ativa para ele); no `login`, credenciais incorretas. | Descarta o token e volta ao login. |
+    | 403 | Forbidden | Token válido, mas a ação não é permitida: usuário comum em op de admin, reserva de terceiro, último admin, senha de confirmação incorreta. | Informa o motivo e mantém a sessão; não repete. |
     | 404 | Not Found | Usuário alvo, sala ou reserva inexistente. | Informa e recarrega a listagem. |
     | 409 | Conflict | Já cadastrado, sessão ativa, horário reservado, sala com reservas ativas. | Mostra o conflito e oferece alternativa. |
     | 500 | Internal Server Error | Falha inesperada no servidor. | Informa e permite nova tentativa; não descarta o token. |
@@ -88,15 +91,24 @@ info:
     ## 7. Pendências encontradas ao modelar
 
     1. **Token ausente**: a regra 2.10 manda responder 400 (campo obrigatório ausente), mas a aba *Códigos de Status* lista "token ausente" como 401.
-    2. **`delete_user` com senha incorreta** responde 401, mas a planilha não define a `message` desse caso.
+    2. **Resolvida na v2.1.** `delete_user` com senha incorreta respondia 401 sem `message` definida e fazia o cliente descartar um token que o servidor mantinha ativo. Agora responde 403 "Senha incorreta" (regra 3.9).
     3. **`update_room` reduzindo `capacity`** abaixo dos `participants` de uma reserva futura responde 409, sem `message` definida.
     4. **`scope` e `min_capacity`** aparecem nas mensagens, mas não no Dicionário. Aqui: `scope` ∈ {mine, all}; `min_capacity` no formato de `capacity`.
     5. **`resources` em atualização**: a regra 2.11 (`""` = não alterar) não cobre arrays. `[]` esvazia a lista ou mantém?
     6. **Precedência de erros** não definida (ex.: usuário comum enviando `create_room` inválido recebe 400 ou 403?). Importa para testes entre grupos.
-    7. **Sessão presa**: se a conexão cair e o cliente perder o token, um novo login responde 409 por até 30 min, e o logout exige o token perdido.
+    7. **Sessão presa**: se o cliente perder o token sem fazer logout (app fechado, travamento), um novo login responde 409 por até 30 min, e o logout exige o token perdido. A v2.1 tirou a senha de confirmação errada dessa lista (regra 3.9); o caso do app fechado continua em aberto.
     8. **Maiúsculas**: a regra 2.12 diz que `user`/`email` são gravados em minúsculas, mas as regex rejeitam maiúsculas. Converter ou responder 400?
     9. **Estados de sala**: uma nota na aba *Msg Salas* cita "fechada para limpeza, ocupado", mas `room_status` só aceita `active`/`inactive`.
     10. **`update_reservation` pelo admin**: `read_reservation` e `delete_reservation` dizem que o admin age sobre qualquer reserva; `update_reservation` não diz. Aqui ficou `x-acesso: dono`.
+
+    ## 8. Histórico de versões
+
+    - **2.1.0**
+      - `email` aceita domínios com vários níveis e com hífen (`.com.br`, `.edu.br`, `alunos.utfpr.edu.br`, `meu-provedor.com.br`)
+        e `_` ou `-` antes do `@`. A terminação do domínio passa a exigir 2 letras ou mais.
+        Todo e-mail válido na 2.0 continua válido, exceto os com terminação de 1 letra.
+      - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
+    - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   contact:
     name: Pedro Silveira e Daniel Jesus
     url: https://github.com/pedrosalvatori/protocolo-reserva-salas
@@ -284,10 +296,12 @@ operations:
     x-acesso: logado
     summary: Remove o próprio cadastro, confirmando com a senha.
     description: |
-      - O alvo vem do token e a senha confirma a operação. Senha incorreta → 401.
-      - O token é invalidado junto e as reservas futuras do usuário são canceladas.
+      - O alvo vem do token e a senha confirma a operação.
+      - Senha incorreta → **403 "Senha incorreta"**: nada é removido e a sessão continua (v2.1, regra 3.9).
+        Antes era 401, o que fazia o cliente descartar um token que o servidor mantinha ativo,
+        e o login seguinte respondia 409 por até 30 min.
+      - Com a senha certa, o token é invalidado junto e as reservas futuras do usuário são canceladas.
       - Remoção de outro usuário: `admin_delete_user`.
-      - ⚠ Pendência 2: não há `message` definida para o 401 de senha incorreta.
     tags: [{$ref: '#/components/tags/usuario'}]
     messages: [{$ref: '#/channels/conexao/messages/delete_user'}]
     reply:
@@ -586,6 +600,8 @@ components:
       examples:
         - name: requisicao
           payload: {"op": "register", "email": "joao.silva@email.com", "user": "joao", "password": "senha123"}
+        - name: email institucional (.edu.br)
+          payload: {"op": "register", "email": "maria.souza@alunos.utfpr.edu.br", "user": "maria", "password": "senha123"}
 
     register_response:
       name: register_response
@@ -835,6 +851,7 @@ components:
               message: {const: Usuario removido com sucesso}
           - $ref: '#/components/schemas/E400_senha'
           - $ref: '#/components/schemas/E401_token'
+          - $ref: '#/components/schemas/E403_senha_incorreta'
           - $ref: '#/components/schemas/E403_ultimo_admin'
           - $ref: '#/components/schemas/E500'
       examples:
@@ -844,7 +861,9 @@ components:
           payload: {"op": "delete_user_response", "status": "400", "message": "Senha em formato invalido"}
         - name: '401'
           payload: {"op": "delete_user_response", "status": "401", "message": "Token invalido ou expirado"}
-        - name: '403'
+        - name: 403 senha incorreta
+          payload: {"op": "delete_user_response", "status": "403", "message": "Senha incorreta"}
+        - name: 403 ultimo admin
           payload: {"op": "delete_user_response", "status": "403", "message": "Nao e possivel remover o ultimo administrador"}
 
     # ─────────────────────────── Administrador ──────────────────────────
@@ -1766,9 +1785,9 @@ components:
       examples: [senha123]
     email:
       type: string
-      pattern: '^[a-z0-9.]+@[a-z0-9]+(\.[a-z]+){1,2}$'
-      description: Único no sistema. Definido no register e não pode ser alterado depois (RNF 5.c).
-      examples: [joao.silva@email.com]
+      pattern: '^[a-z0-9._-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$'
+      description: 'Único no sistema. Aceita domínios com vários níveis e hífen (.com.br, .edu.br, alunos.utfpr.edu.br) e "_" ou "-" antes do @ (v2.1). Definido no register e não pode ser alterado depois (RNF 5.c).'
+      examples: [joao.silva@email.com, maria.souza@alunos.utfpr.edu.br]
     role:
       type: string
       enum: [user, admin]
@@ -1951,6 +1970,11 @@ components:
       title: '403 · Permissao insuficiente'
       type: object
       properties: {status: {const: '403'}, message: {const: Permissao insuficiente}}
+    E403_senha_incorreta:
+      title: '403 · Senha incorreta'
+      type: object
+      description: Senha de confirmação errada com token válido. Nada é alterado e a sessão continua ativa (v2.1).
+      properties: {status: {const: '403'}, message: {const: Senha incorreta}}
     E403_ultimo_admin:
       title: '403 · Nao e possivel remover o ultimo administrador'
       type: object
