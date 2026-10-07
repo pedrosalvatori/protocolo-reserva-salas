@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.3.0
+  version: 2.4.0
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídosprotocolo-mermaid.md · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -41,6 +41,8 @@ info:
     - **2.9** Campos desconhecidos são ignorados (interoperabilidade entre grupos).
     - **2.10** Campo obrigatório ausente, `null` ou de tipo diferente de string → 400.
     - **2.11** `""` em atualização significa **não alterar**; em criação é inválido (400).
+    - **2.13** (v2.4) Atualizar um usuário exige mudar pelo menos um campo: `update_user` com `user` e `password` vazios,
+      ou `admin_update_user` com `user`, `password` e `role` vazios, responde **400 "Nenhum dado para atualizar"**.
     - **2.12** `user` e `email` são sempre gravados em minúsculas.
 
     ## 3. Autenticação, token e perfis
@@ -115,6 +117,9 @@ info:
 
     ## 8. Histórico de versões
 
+    - **2.4.0**
+      - `update_user` com `user` e `password` vazios, ou `admin_update_user` com `user`, `password` e `role` vazios, respondia
+        200 "Dados atualizados com sucesso" sem mudar nada. Agora responde **400 "Nenhum dado para atualizar"** (regra 2.13).
     - **2.3.0** (remoção de conta; nenhuma mensagem mudou)
       - `delete_user` e `admin_delete_user` apagam o cadastro, a sessão e todas as reservas do usuário; o `user` e o `email`
         ficam livres para um novo cadastro (regra 3.13). Antes só as reservas futuras eram canceladas, e um novo cadastro
@@ -131,9 +136,9 @@ info:
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   x-novidades:
-    versao: 2.3.0
+    versao: 2.4.0
     data: 07/10/2026
-    titulo: Ajustes no protocolo (versões 2.1, 2.2 e 2.3)
+    titulo: Ajustes no protocolo (versões 2.1 a 2.4)
     itens:
       - '**E-mail (2.1):** aceita `.com.br`, `.edu.br` e domínios com vários níveis, como `alunos.utfpr.edu.br`, além de hífen no domínio e `_` antes do @.'
       - '**Senha errada no `delete_user` (2.1):** responde **403 "Senha incorreta"** e a sessão continua. Antes era 401, que fazia o cliente sair sem o servidor encerrar o token, e o login seguinte ficava bloqueado (409) por até 30 min.'
@@ -141,10 +146,11 @@ info:
       - '**Login simultâneo (2.2):** checar a sessão e criar o token na mesma seção crítica. Dois logins ao mesmo tempo na mesma conta: um recebe 200 e o outro 409.'
       - '**Ordem no login (2.2):** formato (400) → senha (401) → sessão ativa (409). O 409 só aparece com a senha certa, para não revelar quais contas existem.'
       - '**Remover a conta (2.3):** `delete_user` e `admin_delete_user` apagam o cadastro, a sessão e todas as reservas do usuário. O `user` e o `email` ficam livres para outra pessoa se cadastrar com os mesmos dados.'
+      - '**Alterar usuário sem mudar nada (2.4):** `update_user` com `user` e `password` vazios (ou `admin_update_user` com os três campos vazios) responde **400 "Nenhum dado para atualizar"**, e não mais 200.'
       - '**Testador automático (novo):** `node scripts/testar-servidor.mjs IP PORTA` roda mais de 70 testes contra o servidor de vocês e aponta o que está fora do contrato. Veja o README.'
     o_que_mudar:
       - '**Cliente e servidor:** trocar a regex de e-mail.'
-      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas.'
+      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas; responder 400 "Nenhum dado para atualizar" quando a alteração de usuário vier toda vazia.'
       - '**Cliente:** tratar o 403 do `delete_user` sem descartar o token; reconectar e reenviar quando o socket estiver fechado; só descartar o token depois do `logout_response`.'
   contact:
     name: Pedro Silveira e Daniel Jesus
@@ -325,6 +331,7 @@ operations:
     description: |
       - `""` é ignorado (não altera); `null` → 400.
       - O `email` **não** pode ser alterado (RNF 5.c): se a chave `email` vier na requisição → 400.
+      - `user` e `password` vazios ao mesmo tempo → 400 "Nenhum dado para atualizar" (v2.4, regra 2.13).
       - Ao trocar o próprio `user`, o token continua válido.
     tags: [{$ref: '#/components/tags/usuario'}]
     messages: [{$ref: '#/channels/conexao/messages/update_user'}]
@@ -390,6 +397,7 @@ operations:
     summary: Altera user, senha e/ou role de qualquer usuário. Requer role admin.
     description: |
       - Mesmas regras de `update_user` (`""` = não alterar; `email` proibido), e o admin também pode alterar `role`.
+      - `user`, `password` e `role` vazios ao mesmo tempo → 400 "Nenhum dado para atualizar" (v2.4, regra 2.13).
       - Rebaixar o próprio role sendo o único admin → 403 "Nao e possivel remover o ultimo administrador".
     tags: [{$ref: '#/components/tags/admin'}]
     messages: [{$ref: '#/channels/conexao/messages/admin_update_user'}]
@@ -813,7 +821,7 @@ components:
       summary: 'C → S · altera o próprio cadastro'
       payload:
         type: object
-        description: 'Campo "" = não alterar. A chave `email` é proibida (RNF 5.c) e resulta em 400.'
+        description: 'Campo "" = não alterar, mas pelo menos um precisa mudar (regra 2.13). A chave `email` é proibida (RNF 5.c) e resulta em 400.'
         required: [op, token, user, password]
         properties:
           op: {type: string, const: update_user}
@@ -828,8 +836,15 @@ components:
             anyOf:
               - $ref: '#/components/schemas/password'
               - $ref: '#/components/schemas/nao_alterar'
-        not:
-          required: [email]
+        allOf:
+          - not:
+              description: 'A chave `email` não pode ser enviada: o e-mail não muda depois do cadastro (RNF 5.c).'
+              required: [email]
+          - not:
+              description: '`user` e `password` vazios ao mesmo tempo: não há nada para atualizar (regra 2.13).'
+              x-message: Nenhum dado para atualizar
+              required: [user, password]
+              properties: {user: {const: ''}, password: {const: ''}}
       examples:
         - name: requisicao
           payload: {"op": "update_user", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "user": "joao", "password": "novasenha1"}
@@ -851,6 +866,7 @@ components:
               status: {const: '200'}
               message: {const: Dados atualizados com sucesso}
           - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E400_nada_para_atualizar'
           - $ref: '#/components/schemas/E401_token'
           - $ref: '#/components/schemas/E409_usuario_em_uso'
           - $ref: '#/components/schemas/E500'
@@ -859,6 +875,8 @@ components:
           payload: {"op": "update_user_response", "status": "200", "message": "Dados atualizados com sucesso"}
         - name: '400'
           payload: {"op": "update_user_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: 400 nada para atualizar
+          payload: {"op": "update_user_response", "status": "400", "message": "Nenhum dado para atualizar"}
         - name: '401'
           payload: {"op": "update_user_response", "status": "401", "message": "Token invalido ou expirado"}
         - name: '409'
@@ -1017,7 +1035,7 @@ components:
       summary: 'C → S · altera o cadastro de outro usuário (admin)'
       payload:
         type: object
-        description: 'Campo "" = não alterar. A chave `email` é proibida e resulta em 400.'
+        description: 'Campo "" = não alterar, mas pelo menos um precisa mudar (regra 2.13). A chave `email` é proibida e resulta em 400.'
         required: [op, token, target_user, user, password, role]
         properties:
           op: {type: string, const: admin_update_user}
@@ -1038,8 +1056,15 @@ components:
             anyOf:
               - $ref: '#/components/schemas/role'
               - $ref: '#/components/schemas/nao_alterar'
-        not:
-          required: [email]
+        allOf:
+          - not:
+              description: 'A chave `email` não pode ser enviada: o e-mail não muda depois do cadastro (RNF 5.c).'
+              required: [email]
+          - not:
+              description: '`user`, `password` e `role` vazios ao mesmo tempo: não há nada para atualizar (regra 2.13).'
+              x-message: Nenhum dado para atualizar
+              required: [user, password, role]
+              properties: {user: {const: ''}, password: {const: ''}, role: {const: ''}}
       examples:
         - name: requisicao
           payload: {"op": "admin_update_user", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "target_user": "joao", "user": "joao", "password": "", "role": "admin"}
@@ -1061,6 +1086,7 @@ components:
               status: {const: '200'}
               message: {const: Dados atualizados com sucesso}
           - $ref: '#/components/schemas/E400_dados'
+          - $ref: '#/components/schemas/E400_nada_para_atualizar'
           - $ref: '#/components/schemas/E401_token'
           - $ref: '#/components/schemas/E403_permissao'
           - $ref: '#/components/schemas/E403_ultimo_admin'
@@ -1072,6 +1098,8 @@ components:
           payload: {"op": "admin_update_user_response", "status": "200", "message": "Dados atualizados com sucesso"}
         - name: '400'
           payload: {"op": "admin_update_user_response", "status": "400", "message": "Dados em formato invalido"}
+        - name: 400 nada para atualizar
+          payload: {"op": "admin_update_user_response", "status": "400", "message": "Nenhum dado para atualizar"}
         - name: '401'
           payload: {"op": "admin_update_user_response", "status": "401", "message": "Token invalido ou expirado"}
         - name: 403 permissao
@@ -1995,6 +2023,11 @@ components:
       title: '400 · Dados da sala em formato invalido'
       type: object
       properties: {status: {const: '400'}, message: {const: Dados da sala em formato invalido}}
+    E400_nada_para_atualizar:
+      title: '400 · Nenhum dado para atualizar'
+      type: object
+      description: Atualização de usuário com todos os campos vazios (""), sem nada para mudar (v2.4).
+      properties: {status: {const: '400'}, message: {const: Nenhum dado para atualizar}}
     E400_reserva:
       title: '400 · Dados da reserva em formato invalido'
       type: object

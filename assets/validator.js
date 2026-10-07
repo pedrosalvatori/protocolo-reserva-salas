@@ -1,5 +1,6 @@
 // Validador JSON Schema mínimo, com mensagens em português, para o subconjunto usado no asyncapi.yaml:
-// type, const, enum, pattern, required, properties, items, anyOf, oneOf, not, dependencies (forma de lista).
+// type, const, enum, pattern, required, properties, items, allOf, anyOf, oneOf, not, dependencies (forma de lista).
+// Num "not", a description vira a mensagem de erro e x-message (se houver) diz qual message o servidor deve responder.
 // O script scripts/validate.mjs confere que ele concorda com o Ajv em todos os exemplos e em variações inválidas.
 
 const TYPE_PT = { string: 'string', object: 'objeto', array: 'array' };
@@ -51,9 +52,15 @@ export function validate(schema, data, path = '') {
     data.forEach((v, i) => errs.push(...validate(schema.items, v, `${path}[${i}]`)));
   }
 
+  if (Array.isArray(schema.allOf)) {
+    for (const s of schema.allOf) errs.push(...validate(s, data, path));
+  }
   if (schema.not && validate(schema.not, data, path).length === 0) {
     const req = schema.not.required;
-    errs.push({ path, msg: Array.isArray(req) ? `${req.join(', ')} não pode ser enviado` : `${at} não pode corresponder a esse formato` });
+    const msg = schema.not.description
+      ? schema.not.description.replace(/`/g, '')
+      : Array.isArray(req) ? `${req.join(', ')} não pode ser enviado` : `${at} não pode corresponder a esse formato`;
+    errs.push({ path, msg, ...(schema.not['x-message'] ? { expect: schema.not['x-message'] } : {}) });
   }
   if (Array.isArray(schema.anyOf) && !schema.anyOf.some((s) => validate(s, data, path).length === 0)) {
     // Mostra o erro do ramo principal; o outro ramo costuma ser "" (não alterar)

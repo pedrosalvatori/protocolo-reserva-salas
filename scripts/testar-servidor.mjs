@@ -289,7 +289,11 @@ async function bateria(admin) {
     });
     await teste('update_user com a chave email → 400 (RNF 5.c)', async () => {
       precisa(A.token, 'o login falhou');
-      return (await chamar(cA, { op: 'update_user', token: A.token, user: '', password: '', email: `novo.${sufixo}@teste.com.br` }, { status: '400', message: 'Dados em formato invalido' })).problemas;
+      return (await chamar(cA, { op: 'update_user', token: A.token, user: A.user, password: '', email: `novo.${sufixo}@teste.com.br` }, { status: '400', message: 'Dados em formato invalido' })).problemas;
+    });
+    await teste('update_user com user e password vazios → 400 "Nenhum dado para atualizar" (v2.4)', async () => {
+      precisa(A.token, 'o login falhou');
+      return (await chamar(cA, { op: 'update_user', token: A.token, user: '', password: '' }, { status: '400', message: 'Nenhum dado para atualizar' })).problemas;
     });
     await teste('update_user para um user que já existe → 409', async () => {
       precisa(A.token && B.cadastrado, 'faltam os dois usuários de teste');
@@ -347,9 +351,13 @@ async function bateria(admin) {
         precisa(ADM.token, 'o login do admin falhou');
         return (await chamar(cAdm, { op: 'admin_read_user', token: ADM.token, target_user: `naoexiste${sufixo}` }, { status: '404', message: 'Usuario nao encontrado' })).problemas;
       });
-      await teste('admin_update_user sem alterar nada ("" em tudo) → 200', async () => {
+      await teste('admin_update_user com user, password e role vazios → 400 "Nenhum dado para atualizar" (v2.4)', async () => {
         precisa(ADM.token && B.cadastrado, 'faltam o admin ou o usuário de teste');
-        return (await chamar(cAdm, { op: 'admin_update_user', token: ADM.token, target_user: B.user, user: '', password: '', role: '' }, { status: '200' })).problemas;
+        return (await chamar(cAdm, { op: 'admin_update_user', token: ADM.token, target_user: B.user, user: '', password: '', role: '' }, { status: '400', message: 'Nenhum dado para atualizar' })).problemas;
+      });
+      await teste('admin_update_user trocando só a senha → 200', async () => {
+        precisa(ADM.token && B.cadastrado, 'faltam o admin ou o usuário de teste');
+        return (await chamar(cAdm, { op: 'admin_update_user', token: ADM.token, target_user: B.user, user: '', password: 'outrasenha2', role: '' }, { status: '200', message: 'Dados atualizados com sucesso' })).problemas;
       });
     }
 

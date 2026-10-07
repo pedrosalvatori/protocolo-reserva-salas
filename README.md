@@ -189,6 +189,15 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 
 ## Versões
 
+### 2.4.0 (alteração de usuário sem nada para mudar)
+
+- `update_user` com `user` e `password` vazios, ou `admin_update_user` com `user`, `password` e `role` vazios,
+  respondia **200 "Dados atualizados com sucesso"** sem mudar nada. Agora responde
+  **400 "Nenhum dado para atualizar"** (regra 2.13).
+
+O que cada grupo precisa mudar: no servidor, checar esse caso antes de gravar e responder o 400 com essa
+message; no cliente, mostrar a mensagem (ou nem enviar quando o formulário estiver todo vazio).
+
 ### 2.3.0 (remoção de conta)
 
 - **Remover uma conta apaga tudo dela.** `delete_user` e `admin_delete_user` apagam o cadastro, encerram a sessão

@@ -1,6 +1,6 @@
 {
   "name": "protocolo-reserva-salas",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
   "description": "Protocolo de troca de mensagens do Sistema Inteligente de Reserva de Salas (AsyncAPI 3.0)",
   "type": "module",

@@ -128,7 +128,11 @@ function payloadNotes(p) {
   if (!p) return '';
   const notes = [];
   if (p.description) notes.push(mdInline(p.description));
-  if (Array.isArray(p.not?.required)) notes.push(`${p.not.required.map((k) => `<code>${esc(k)}</code>`).join(', ')}: proibido nesta operação (responde 400).`);
+  for (const n of [p.not, ...(p.allOf || []).map((s) => s.not)].filter(Boolean)) {
+    const resposta = n['x-message'] ? ` Responde 400 "${esc(n['x-message'])}".` : '';
+    if (n.description) notes.push(`${mdInline(n.description)}${resposta}`);
+    else if (Array.isArray(n.required)) notes.push(`${n.required.map((k) => `<code>${esc(k)}</code>`).join(', ')}: proibido nesta operação (responde 400).`);
+  }
   if (p.dependencies) notes.push(`${Object.keys(p.dependencies).map((k) => `<code>${esc(k)}</code>`).join(', ')}: todos juntos ou nenhum.`);
   return notes.length ? `<div class="payload-notes"><ul>${notes.map((n) => `<li>${n}</li>`).join('')}</ul></div>` : '';
 }
@@ -402,8 +406,9 @@ function checkRequest(o, text) {
   const errs = validate(target.req.payload, data);
   errs.forEach((e) => items.push({ level: 'err', msg: e.msg }));
   if (errs.length) {
+    const especifica = errs.find((e) => e.expect)?.expect;
     const v400 = variantsOf(target.res).find((v) => v.status === '400');
-    if (v400) items.push({ level: 'info', msg: `Resposta esperada do servidor: 400 · ${v400.message}` });
+    if (especifica || v400) items.push({ level: 'info', msg: `Resposta esperada do servidor: 400 · ${especifica || v400.message}` });
   } else if (!items.some((i) => i.level === 'err')) {
     items.unshift({ level: 'ok', msg: `Requisição válida para ${target.id} (${b} bytes).` });
   }

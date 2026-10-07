@@ -29,6 +29,8 @@ function* variations(payload) {
     yield { ...payload, [key]: '' };
     yield { ...payload, [key]: 'X#' };
   }
+  // todos os campos de texto vazios (menos op e token), como numa atualização sem nada para mudar
+  yield Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, k === 'op' || k === 'token' || typeof v !== 'string' ? v : '']));
   yield { ...payload, campo_extra: 'x' };
   yield { ...payload, email: 'joao@email.com' };
   yield { ...payload, date: '2026-09-15' };
