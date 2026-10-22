@@ -35,7 +35,8 @@ let [host, porta] = args;
 if (ajuda) {
   console.log(`Uso: node scripts/testar-servidor.mjs [ip] [porta] [opções]
 
-  --admin email:senha   conta de admin já cadastrada no servidor (habilita os testes de admin e de salas)
+  --admin email:senha   conta de admin do servidor (padrão: o admin inicial admin@admin.com:admin, regra 3.15;
+                        use --admin - para pular os testes de admin e de salas)
   --interativo          você digita as mensagens e vê cada resposta validada
   --timeout ms          espera máxima por resposta (padrão 5000)
 
@@ -324,10 +325,13 @@ async function bateria(admin) {
       return r.problemas;
     });
     if (!ADM) {
-      await teste('testes de admin', () => precisa(false, 'sem conta de admin; rode com --admin email:senha'));
+      await teste('testes de admin', () => precisa(false, 'pulados com --admin -'));
     } else {
-      await teste('login do admin → 200 com role "admin"', async () => {
+      await teste(ADM.padrao ? 'login do admin inicial admin@admin.com → 200 com role "admin" (v2.6, regra 3.15)' : 'login do admin → 200 com role "admin"', async () => {
         const { data, problemas } = await chamar(cAdm, { op: 'login', email: ADM.email, password: ADM.senha }, { status: '200' });
+        if (data?.status === '401' && ADM.padrao) {
+          problemas.push(falha('o servidor não criou o admin inicial (admin@admin.com / admin), ou a senha dele foi trocada. Nesse caso, rode com --admin email:senha'));
+        }
         if (data?.status === '200') {
           if (data.role === 'admin') ADM.token = data.token;
           else problemas.push(falha(`a conta informada tem role ${JSON.stringify(data.role)}, não "admin"`));
@@ -754,13 +758,14 @@ para mandar o exemplo do contrato. "ops" lista as operações e "sair" encerra.`
 
 // ───────────────────────── início ─────────────────────────
 async function main() {
-  if (!host || !porta || (!modoInterativo && adminTexto === undefined && process.stdin.isTTY)) {
+  const ADMIN_INICIAL = 'admin@admin.com:admin';
+  if (!host || !porta) {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
       if (!host) host = (await rl.question('IP do servidor [127.0.0.1]: ')).trim() || '127.0.0.1';
       if (!porta) porta = (await rl.question('Porta do servidor: ')).trim();
       if (!modoInterativo && adminTexto === undefined) {
-        adminTexto = (await rl.question('Conta de admin para os testes de admin e salas (email:senha, Enter para pular): ')).trim();
+        adminTexto = (await rl.question(`Conta de admin [${ADMIN_INICIAL}] (Enter usa o admin inicial; "-" pula os testes de admin): `)).trim();
       }
     } finally {
       rl.close();
@@ -770,11 +775,12 @@ async function main() {
     console.error(vermelho(`Porta inválida: ${porta}`));
     process.exit(2);
   }
+  if (!adminTexto) adminTexto = ADMIN_INICIAL;
   let admin = null;
-  if (adminTexto) {
+  if (adminTexto !== '-') {
     const i = adminTexto.indexOf(':');
     if (i < 1) { console.error(vermelho('Use --admin email:senha')); process.exit(2); }
-    admin = { email: adminTexto.slice(0, i), senha: adminTexto.slice(i + 1) };
+    admin = { email: adminTexto.slice(0, i), senha: adminTexto.slice(i + 1), padrao: adminTexto === ADMIN_INICIAL };
   }
 
   const teste1 = new Conexao();

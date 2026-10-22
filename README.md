@@ -40,19 +40,22 @@ cd protocolo-reserva-salas
 node scripts/testar-servidor.mjs
 ```
 
-O testador pergunta o IP, a porta e, se quiser, uma conta de admin já cadastrada no servidor (`email:senha`).
-Também dá para passar direto:
+O testador pergunta o IP e a porta, e usa o admin inicial (`admin@admin.com` / `admin`, regra 3.15) para os
+testes de admin e de salas. Também dá para passar direto:
 
 ```
-node scripts/testar-servidor.mjs 127.0.0.1 5000 --admin admin@email.com:senha123
+node scripts/testar-servidor.mjs 127.0.0.1 5000
 ```
+
+Se o grupo trocou a senha do admin, passe a conta com `--admin email:senha`. Para pular os testes de admin, use
+`--admin -`.
 
 Ele roda mais de 70 testes e confere cada resposta contra o `asyncapi.yaml`, inclusive o texto exato da
 `message`. Os testes cobrem:
 
 - formato e erros de protocolo;
 - cadastro, login, token e próprio cadastro;
-- administrador e salas (precisam da conta de admin);
+- administrador e salas (com o admin inicial);
 - reservas, incluindo duas reservas no mesmo horário ao mesmo tempo, que testa o lock por sala;
 - sessão, incluindo dois logins simultâneos;
 - remoção de conta.
@@ -188,6 +191,21 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 10. **`update_reservation` pelo admin:** `read_reservation` e `delete_reservation` dizem que o admin age sobre qualquer reserva; `update_reservation` não diz. No contrato ficou só o dono.
 
 ## Versões
+
+### 2.6.0 (admin inicial)
+
+- **Todo servidor começa com o mesmo admin.** Quando não há nenhum usuário `admin` no banco (por exemplo, na
+  primeira execução), o servidor cria a conta:
+
+  | user | email | senha | role |
+  |---|---|---|---|
+  | `admin` | `admin@admin.com` | `admin` | `admin` |
+
+  Antes, como o `register` sempre cria `user` e só um admin promove alguém, o primeiro admin precisava ser
+  inserido no banco à mão, e cada grupo usava uma conta diferente (regra 3.15).
+- O testador entra com essa conta por padrão.
+
+O que cada grupo precisa mudar: no servidor, criar o admin inicial ao iniciar quando não existir nenhum admin.
 
 ### 2.5.0 (whitelist de tokens de admin)
 

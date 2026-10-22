@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.5.0
+  version: 2.6.0
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídosprotocolo-mermaid.md · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -52,7 +52,7 @@ info:
     - **3.3** Validade: 30 min sem uso; cada requisição válida renova a contagem. Token expirado → 401.
     - **3.4** O logout invalida o token; um token invalidado nunca é reutilizado.
     - **3.5** Sessão única: novo login com sessão ativa → 409.
-    - **3.6** Perfis (`role`): `user` e `admin`. Todo `register` nasce `user`.
+    - **3.6** Perfis (`role`): `user` e `admin`. Todo `register` nasce `user`. O primeiro admin é o admin inicial (regra 3.15).
     - **3.7** Operações `admin_*` e criar/alterar/remover sala exigem `admin`. Token válido sem permissão → 403.
       A verificação usa a whitelist de tokens de admin (regra 3.14).
     - **3.8** O autor é identificado **pelo token**; o cliente nunca envia o próprio `user` para dizer quem é.
@@ -75,6 +75,10 @@ info:
       usuário que está logado. Sai quando a conta é rebaixada, no logout, na expiração e na remoção da conta. A mudança
       vale na hora, sem novo login. O `role` nunca vem do cliente: o valor do `login_response` só serve para montar a
       tela, e um `role` enviado em qualquer requisição (fora do `admin_update_user`) é ignorado. Token fora da lista → 403.
+    - **3.15** (v2.6) **Admin inicial.** Ao iniciar sem nenhum usuário `admin` no banco (por exemplo, na primeira execução),
+      o servidor cria a conta user `admin`, email `admin@admin.com`, senha `admin`, role `admin`. Ela é igual em todos os
+      servidores, para os grupos testarem os servidores uns dos outros (o testador usa essa conta por padrão). Como o
+      último admin nunca pode ser removido nem rebaixado, sempre existe pelo menos um admin depois disso.
 
     Cada operação indica o nível de acesso na extensão `x-acesso`: `publico` (sem token), `logado`,
     `admin`, `dono` (dono da reserva) ou `dono-ou-admin`.
@@ -124,6 +128,10 @@ info:
 
     ## 8. Histórico de versões
 
+    - **2.6.0** (admin inicial; nenhuma mensagem mudou)
+      - Todo servidor cria o admin inicial (`admin` / `admin@admin.com` / senha `admin`) quando não há nenhum admin (regra 3.15).
+        Antes, como o `register` sempre cria `user` e só um admin promove, o primeiro admin precisava ser inserido no banco
+        à mão e cada grupo usava uma conta diferente.
     - **2.5.0** (permissões de admin; nenhuma mensagem mudou)
       - Whitelist de tokens de admin (regra 3.14): as operações de admin só aceitam tokens da lista. Rebaixar uma conta
         tira o token dela da lista na hora, e promover coloca. Antes, um servidor que guardasse o `role` do login deixava
@@ -147,10 +155,11 @@ info:
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   x-novidades:
-    versao: 2.5.0
+    versao: 2.6.0
     data: 22/10/2026
-    titulo: Ajustes no protocolo (versões 2.1 a 2.5)
+    titulo: Ajustes no protocolo (versões 2.1 a 2.6)
     itens:
+      - '**Admin inicial (2.6):** todo servidor cria, quando não há nenhum admin, a conta `admin` com email `admin@admin.com` e senha `admin`. É a mesma em todos os grupos, e o testador já entra com ela.'
       - '**Whitelist de admin (2.5):** as operações de admin só aceitam tokens que estão na whitelist de admin do servidor. Rebaixar alguém tira o token da lista na hora, sem esperar o logout; promover coloca; e um `role` mandado pelo cliente é ignorado.'
       - '**Alterar usuário sem mudar nada (2.4):** `update_user` com `user` e `password` vazios (ou `admin_update_user` com os três campos vazios) responde **400 "Nenhum dado para atualizar"**, e não mais 200.'
       - '**Remover a conta (2.3):** `delete_user` e `admin_delete_user` apagam o cadastro, a sessão e todas as reservas do usuário. O `user` e o `email` ficam livres para outra pessoa se cadastrar com os mesmos dados.'
@@ -162,7 +171,7 @@ info:
       - '**Testador automático (novo):** `node scripts/testar-servidor.mjs IP PORTA` roda mais de 70 testes contra o servidor de vocês e aponta o que está fora do contrato. Veja o README.'
     o_que_mudar:
       - '**Cliente e servidor:** trocar a regex de e-mail.'
-      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas; responder 400 "Nenhum dado para atualizar" quando a alteração de usuário vier toda vazia; manter a whitelist de tokens de admin e liberar as operações de admin só por ela.'
+      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas; responder 400 "Nenhum dado para atualizar" quando a alteração de usuário vier toda vazia; manter a whitelist de tokens de admin e liberar as operações de admin só por ela; criar o admin inicial (`admin@admin.com` / `admin`) quando não houver nenhum admin.'
       - '**Cliente:** tratar o 403 do `delete_user` sem descartar o token; reconectar e reenviar quando o socket estiver fechado; só descartar o token depois do `logout_response`; usar o `role` do login só para montar a tela.'
   contact:
     name: Pedro Silveira e Daniel Jesus
@@ -711,6 +720,8 @@ components:
       examples:
         - name: requisicao
           payload: {"op": "login", "email": "joao.silva@email.com", "password": "senha123"}
+        - name: admin inicial (regra 3.15)
+          payload: {"op": "login", "email": "admin@admin.com", "password": "admin"}
 
     login_response:
       name: login_response
