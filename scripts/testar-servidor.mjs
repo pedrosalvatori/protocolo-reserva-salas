@@ -317,6 +317,12 @@ async function bateria(admin) {
     });
 
     grupo('Administrador');
+    await teste('role mandado pelo cliente é ignorado: usuário comum com "role": "admin" → 403 (v2.5, regra 3.14)', async () => {
+      precisa(A.token, 'o login falhou');
+      const r = await chamar(cA, { op: 'admin_list_users', token: A.token, role: 'admin' }, { status: '403', message: 'Permissao insuficiente' });
+      if (r.data?.status === '200') r.problemas.push(falha('o servidor confiou no role vindo do cliente'));
+      return r.problemas;
+    });
     if (!ADM) {
       await teste('testes de admin', () => precisa(false, 'sem conta de admin; rode com --admin email:senha'));
     } else {
@@ -357,7 +363,34 @@ async function bateria(admin) {
       });
       await teste('admin_update_user trocando só a senha → 200', async () => {
         precisa(ADM.token && B.cadastrado, 'faltam o admin ou o usuário de teste');
-        return (await chamar(cAdm, { op: 'admin_update_user', token: ADM.token, target_user: B.user, user: '', password: 'outrasenha2', role: '' }, { status: '200', message: 'Dados atualizados com sucesso' })).problemas;
+        const r = await chamar(cAdm, { op: 'admin_update_user', token: ADM.token, target_user: B.user, user: '', password: 'outrasenha2', role: '' }, { status: '200', message: 'Dados atualizados com sucesso' });
+        if (r.data?.status === '200') B.senhaAtual = 'outrasenha2';
+        return r.problemas;
+      });
+      await teste('promover um usuário logado: vira admin na hora, sem novo login (v2.5, regra 3.14)', async () => {
+        precisa(ADM.token && B.token, 'faltam o admin ou o login do segundo usuário');
+        const promo = await chamar(cAdm, { op: 'admin_update_user', token: ADM.token, target_user: B.user, user: '', password: '', role: 'admin' }, { status: '200' });
+        if (promo.data?.status !== '200') return promo.problemas;
+        B.promovido = true;
+        const r = await chamar(cB, { op: 'admin_list_users', token: B.token }, { status: '200' });
+        if (r.data?.status === '403') r.problemas.push(falha('a promoção só valeria depois de novo login: o token não entrou na whitelist de admin'));
+        return [...promo.problemas, ...r.problemas];
+      });
+      await teste('rebaixar um admin logado: o token sai da whitelist na hora → 403 (v2.5, regra 3.14)', async () => {
+        precisa(B.promovido, 'a promoção falhou');
+        // novo login já como admin, para o token entrar na lista pelo login (o caso em que o role fica "guardado")
+        const saiu = await chamar(cB, { op: 'logout', token: B.token }, { status: '200' });
+        const entrou = await chamar(cB, { op: 'login', email: B.email, password: B.senhaAtual || B.senha }, { status: '200' });
+        const problemas = [...saiu.problemas, ...entrou.problemas];
+        if (entrou.data?.status !== '200') return problemas;
+        B.token = entrou.data.token;
+        if (entrou.data.role !== 'admin') problemas.push(falha(`depois da promoção, o login devolveu role ${JSON.stringify(entrou.data.role)}; esperado "admin"`));
+        const reb = await chamar(cAdm, { op: 'admin_update_user', token: ADM.token, target_user: B.user, user: '', password: '', role: 'user' }, { status: '200' });
+        problemas.push(...reb.problemas);
+        if (reb.data?.status !== '200') return problemas;
+        const r = await chamar(cB, { op: 'admin_list_users', token: B.token }, { status: '403', message: 'Permissao insuficiente' });
+        if (r.data?.status === '200') r.problemas.push(falha('o admin rebaixado continua com poder de admin: o token não saiu da whitelist'));
+        return [...problemas, ...r.problemas];
       });
     }
 

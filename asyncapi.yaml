@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.4.0
+  version: 2.5.0
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídosprotocolo-mermaid.md · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -54,6 +54,7 @@ info:
     - **3.5** Sessão única: novo login com sessão ativa → 409.
     - **3.6** Perfis (`role`): `user` e `admin`. Todo `register` nasce `user`.
     - **3.7** Operações `admin_*` e criar/alterar/remover sala exigem `admin`. Token válido sem permissão → 403.
+      A verificação usa a whitelist de tokens de admin (regra 3.14).
     - **3.8** O autor é identificado **pelo token**; o cliente nunca envia o próprio `user` para dizer quem é.
     - **3.9** (v2.1) **401 significa que o servidor não tem sessão ativa para aquele token** (ausente, inválido,
       expirado ou invalidado) ou, no `login`, que as credenciais estão erradas. Por isso o cliente pode descartar
@@ -68,6 +69,12 @@ info:
     - **3.13** (v2.3) **Remover uma conta apaga tudo dela.** `delete_user` e `admin_delete_user` apagam o cadastro, encerram a
       sessão e apagam **todas** as reservas do usuário (passadas e futuras). O `user` e o `email` ficam livres: um novo
       `register` com os mesmos dados responde 201. Assim ninguém herda reservas ou histórico de uma conta removida.
+    - **3.14** (v2.5) **Whitelist de tokens de admin.** O servidor mantém uma lista (whitelist) dos tokens com poder de
+      admin, e só ela libera as operações de admin: `admin_*`, criar/alterar/remover sala, `scope: "all"` e ações sobre
+      reservas de terceiros. Um token entra na lista quando o login é de uma conta `admin`, ou quando um admin promove um
+      usuário que está logado. Sai quando a conta é rebaixada, no logout, na expiração e na remoção da conta. A mudança
+      vale na hora, sem novo login. O `role` nunca vem do cliente: o valor do `login_response` só serve para montar a
+      tela, e um `role` enviado em qualquer requisição (fora do `admin_update_user`) é ignorado. Token fora da lista → 403.
 
     Cada operação indica o nível de acesso na extensão `x-acesso`: `publico` (sem token), `logado`,
     `admin`, `dono` (dono da reserva) ou `dono-ou-admin`.
@@ -117,6 +124,10 @@ info:
 
     ## 8. Histórico de versões
 
+    - **2.5.0** (permissões de admin; nenhuma mensagem mudou)
+      - Whitelist de tokens de admin (regra 3.14): as operações de admin só aceitam tokens da lista. Rebaixar uma conta
+        tira o token dela da lista na hora, e promover coloca. Antes, um servidor que guardasse o `role` do login deixava
+        um admin rebaixado com poderes de admin até o token expirar, e nada proibia confiar num `role` vindo do cliente.
     - **2.4.0**
       - `update_user` com `user` e `password` vazios, ou `admin_update_user` com `user`, `password` e `role` vazios, respondia
         200 "Dados atualizados com sucesso" sem mudar nada. Agora responde **400 "Nenhum dado para atualizar"** (regra 2.13).
@@ -136,22 +147,23 @@ info:
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   x-novidades:
-    versao: 2.4.0
-    data: 07/10/2026
-    titulo: Ajustes no protocolo (versões 2.1 a 2.4)
+    versao: 2.5.0
+    data: 22/10/2026
+    titulo: Ajustes no protocolo (versões 2.1 a 2.5)
     itens:
-      - '**E-mail (2.1):** aceita `.com.br`, `.edu.br` e domínios com vários níveis, como `alunos.utfpr.edu.br`, além de hífen no domínio e `_` antes do @.'
-      - '**Senha errada no `delete_user` (2.1):** responde **403 "Senha incorreta"** e a sessão continua. Antes era 401, que fazia o cliente sair sem o servidor encerrar o token, e o login seguinte ficava bloqueado (409) por até 30 min.'
+      - '**Whitelist de admin (2.5):** as operações de admin só aceitam tokens que estão na whitelist de admin do servidor. Rebaixar alguém tira o token da lista na hora, sem esperar o logout; promover coloca; e um `role` mandado pelo cliente é ignorado.'
+      - '**Alterar usuário sem mudar nada (2.4):** `update_user` com `user` e `password` vazios (ou `admin_update_user` com os três campos vazios) responde **400 "Nenhum dado para atualizar"**, e não mais 200.'
+      - '**Remover a conta (2.3):** `delete_user` e `admin_delete_user` apagam o cadastro, a sessão e todas as reservas do usuário. O `user` e o `email` ficam livres para outra pessoa se cadastrar com os mesmos dados.'
       - '**Logout depois de 5 min parado (2.2):** a conexão pode ter sido fechada por inatividade. O cliente reconecta, reenvia o logout e só descarta o token quando recebe a resposta.'
       - '**Login simultâneo (2.2):** checar a sessão e criar o token na mesma seção crítica. Dois logins ao mesmo tempo na mesma conta: um recebe 200 e o outro 409.'
       - '**Ordem no login (2.2):** formato (400) → senha (401) → sessão ativa (409). O 409 só aparece com a senha certa, para não revelar quais contas existem.'
-      - '**Remover a conta (2.3):** `delete_user` e `admin_delete_user` apagam o cadastro, a sessão e todas as reservas do usuário. O `user` e o `email` ficam livres para outra pessoa se cadastrar com os mesmos dados.'
-      - '**Alterar usuário sem mudar nada (2.4):** `update_user` com `user` e `password` vazios (ou `admin_update_user` com os três campos vazios) responde **400 "Nenhum dado para atualizar"**, e não mais 200.'
+      - '**E-mail (2.1):** aceita `.com.br`, `.edu.br` e domínios com vários níveis, como `alunos.utfpr.edu.br`, além de hífen no domínio e `_` antes do @.'
+      - '**Senha errada no `delete_user` (2.1):** responde **403 "Senha incorreta"** e a sessão continua. Antes era 401, que fazia o cliente sair sem o servidor encerrar o token, e o login seguinte ficava bloqueado (409) por até 30 min.'
       - '**Testador automático (novo):** `node scripts/testar-servidor.mjs IP PORTA` roda mais de 70 testes contra o servidor de vocês e aponta o que está fora do contrato. Veja o README.'
     o_que_mudar:
       - '**Cliente e servidor:** trocar a regex de e-mail.'
-      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas; responder 400 "Nenhum dado para atualizar" quando a alteração de usuário vier toda vazia.'
-      - '**Cliente:** tratar o 403 do `delete_user` sem descartar o token; reconectar e reenviar quando o socket estiver fechado; só descartar o token depois do `logout_response`.'
+      - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas; responder 400 "Nenhum dado para atualizar" quando a alteração de usuário vier toda vazia; manter a whitelist de tokens de admin e liberar as operações de admin só por ela.'
+      - '**Cliente:** tratar o 403 do `delete_user` sem descartar o token; reconectar e reenviar quando o socket estiver fechado; só descartar o token depois do `logout_response`; usar o `role` do login só para montar a tela.'
   contact:
     name: Pedro Silveira e Daniel Jesus
     url: https://github.com/pedrosalvatori/protocolo-reserva-salas
@@ -283,6 +295,7 @@ operations:
         A checagem de sessão e a criação do token ficam na mesma seção crítica (v2.2, regra 3.11):
         com dois logins simultâneos, um recebe 200 e o outro 409.
       - Sessão ativa → 409 (fazer logout ou aguardar a expiração de 30 min).
+      - Se a conta for `admin`, o token entra na whitelist de admin (v2.5, regra 3.14).
     tags: [{$ref: '#/components/tags/autenticacao'}]
     messages: [{$ref: '#/channels/conexao/messages/login'}]
     reply:
@@ -398,6 +411,8 @@ operations:
     description: |
       - Mesmas regras de `update_user` (`""` = não alterar; `email` proibido), e o admin também pode alterar `role`.
       - `user`, `password` e `role` vazios ao mesmo tempo → 400 "Nenhum dado para atualizar" (v2.4, regra 2.13).
+      - Mudar o `role` atualiza a whitelist de admin na hora (v2.5, regra 3.14): promover coloca o token ativo do alvo
+        na lista e rebaixar tira. O alvo não precisa fazer login de novo para a mudança valer.
       - Rebaixar o próprio role sendo o único admin → 403 "Nao e possivel remover o ultimo administrador".
     tags: [{$ref: '#/components/tags/admin'}]
     messages: [{$ref: '#/channels/conexao/messages/admin_update_user'}]

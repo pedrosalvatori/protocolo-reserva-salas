@@ -189,6 +189,23 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 
 ## Versões
 
+### 2.5.0 (whitelist de tokens de admin)
+
+- **Só a whitelist libera ações de admin.** O servidor mantém uma lista dos tokens com poder de admin, e as
+  operações de admin (`admin_*`, criar/alterar/remover sala, `scope: "all"`, ações sobre reservas de terceiros)
+  só aceitam tokens dessa lista. Fora dela: 403 "Permissao insuficiente" (regra 3.14).
+- **O token entra na lista** no login de uma conta admin, ou quando um admin promove um usuário que está logado.
+  **Sai da lista** na hora em que a conta é rebaixada, no logout, na expiração e na remoção da conta, sem esperar
+  novo login.
+- **O `role` nunca vem do cliente.** O `role` do `login_response` só serve para montar a tela. Um `role` enviado em
+  qualquer requisição (fora do `admin_update_user`) é ignorado.
+
+Antes, um servidor que guardasse o `role` do momento do login deixava um admin rebaixado com poderes de admin até
+o token expirar, e nada proibia confiar num `role` vindo do cliente.
+
+O que cada grupo precisa mudar: no servidor, manter a whitelist e conferir por ela (e atualizá-la no
+`admin_update_user`); no cliente, usar o `role` só para a interface.
+
 ### 2.4.0 (alteração de usuário sem nada para mudar)
 
 - `update_user` com `user` e `password` vazios, ou `admin_update_user` com `user`, `password` e `role` vazios,
