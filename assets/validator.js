@@ -1,5 +1,6 @@
 // Validador JSON Schema mínimo, com mensagens em português, para o subconjunto usado no asyncapi.yaml:
-// type, const, enum, pattern, required, properties, items, allOf, anyOf, oneOf, not, dependencies (forma de lista).
+// type, const, enum, pattern, required, properties, items, minItems, maxItems, uniqueItems, allOf, anyOf, oneOf, not,
+// dependencies (forma de lista).
 // Num "not", a description vira a mensagem de erro e x-message (se houver) diz qual message o servidor deve responder.
 // O script scripts/validate.mjs confere que ele concorda com o Ajv em todos os exemplos e em variações inválidas.
 
@@ -48,8 +49,17 @@ export function validate(schema, data, path = '') {
       if (missing.length) errs.push({ path: join(path, k), msg: `${k} exige também: ${missing.join(', ')}` });
     }
   }
-  if (typeOf(data) === 'array' && schema.items) {
-    data.forEach((v, i) => errs.push(...validate(schema.items, v, `${path}[${i}]`)));
+  if (typeOf(data) === 'array') {
+    if (schema.items) data.forEach((v, i) => errs.push(...validate(schema.items, v, `${path}[${i}]`)));
+    if (typeof schema.minItems === 'number' && data.length < schema.minItems) {
+      errs.push({ path, msg: `${at} precisa de pelo menos ${schema.minItems} item(ns)` });
+    }
+    if (typeof schema.maxItems === 'number' && data.length > schema.maxItems) {
+      errs.push({ path, msg: schema.maxItems === 0 ? `${at} deve ser []` : `${at} aceita no máximo ${schema.maxItems} item(ns)` });
+    }
+    if (schema.uniqueItems && new Set(data.map((v) => JSON.stringify(v))).size !== data.length) {
+      errs.push({ path, msg: `${at} não pode ter itens repetidos` });
+    }
   }
 
   if (Array.isArray(schema.allOf)) {
@@ -64,8 +74,9 @@ export function validate(schema, data, path = '') {
   }
   if (Array.isArray(schema.anyOf) && !schema.anyOf.some((s) => validate(s, data, path).length === 0)) {
     // Mostra o erro do ramo principal; o outro ramo costuma ser "" (não alterar)
-    const main = schema.anyOf.find((s) => s.const !== '') || schema.anyOf[0];
-    const keep = schema.anyOf.some((s) => s.const === '') ? ' (ou "" para não alterar)' : '';
+    const main = schema.anyOf.find((s) => s.const !== '' && s.maxItems !== 0) || schema.anyOf[0];
+    const keep = schema.anyOf.some((s) => s.const === '') ? ' (ou "" para não alterar)'
+      : schema.anyOf.some((s) => s.maxItems === 0) ? ' (ou [] para não alterar)' : '';
     const sub = validate(main, data, path);
     errs.push(...(sub.length ? sub.map((e) => ({ ...e, msg: e.msg + keep })) : [{ path, msg: `${at} inválido${keep}` }]));
   }

@@ -28,7 +28,16 @@ function* variations(payload) {
     yield { ...payload, [key]: null };
     yield { ...payload, [key]: '' };
     yield { ...payload, [key]: 'X#' };
+    if (Array.isArray(payload[key])) {
+      // listas: vazia, com item repetido, com item fora do enum
+      yield { ...payload, [key]: [] };
+      if (payload[key].length) yield { ...payload, [key]: [...payload[key], payload[key][0]] };
+      yield { ...payload, [key]: [...payload[key], 'xyz'] };
+    }
   }
+  // horários fora da tabela da UTFPR (v2.7)
+  if ('start_time' in payload) yield { ...payload, start_time: '14:00' };
+  if ('end_time' in payload) yield { ...payload, end_time: '16:00' };
   // todos os campos de texto vazios (menos op e token), como numa atualização sem nada para mudar
   yield Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, k === 'op' || k === 'token' || typeof v !== 'string' ? v : '']));
   yield { ...payload, campo_extra: 'x' };

@@ -188,6 +188,23 @@ function dia(desloc) {
   const p = (x) => String(x).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+// v2.7: dia da semana de uma data (dom, seg, ..., sab) e a primeira data a partir de desloc que cai num dos dias pedidos
+const DIAS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+const diaSemana = (data) => DIAS[new Date(`${data}T12:00:00`).getDay()];
+function diaEm(desloc, dias) {
+  for (let i = 0; i < 7; i++) if (dias.includes(diaSemana(dia(desloc + i)))) return dia(desloc + i);
+  return null;
+}
+// Sala de teste: segunda a sexta, manhã e tarde (M1 a T6). Noite e fim de semana ficam fora do funcionamento.
+const SALA_DIAS = ['seg', 'ter', 'qua', 'qui', 'sex'];
+const SALA_SLOTS = ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6'];
+// Horários que os testes de reserva usam numa sala que já existia (sem --admin)
+const SLOTS_USADOS = ['M1', 'M2', 'M3', 'M6', 'T1', 'T2', 'T3', 'T5', 'T6'];
+const HORARIOS = {
+  M1: ['07:30', '08:20'], M2: ['08:20', '09:10'], M3: ['09:10', '10:00'], M4: ['10:20', '11:10'], M5: ['11:10', '12:00'], M6: ['12:00', '12:50'],
+  T1: ['13:00', '13:50'], T2: ['13:50', '14:40'], T3: ['14:40', '15:30'], T4: ['15:50', '16:40'], T5: ['16:40', '17:30'], T6: ['17:30', '18:20'],
+  N1: ['18:40', '19:30'], N2: ['19:30', '20:20'], N3: ['20:20', '21:10'], N4: ['21:20', '22:10'], N5: ['22:10', '23:00'],
+};
 
 // ───────────────────────── bateria de testes ─────────────────────────
 async function bateria(admin) {
@@ -201,7 +218,7 @@ async function bateria(admin) {
   const cX = new Conexao();
   const sala = {};
   const reservas = [];
-  const data1 = dia(30 + crypto.randomInt(60));
+  let data1 = diaEm(30 + crypto.randomInt(60), SALA_DIAS);
   const conexoes = [cA, cB, cAdm, cX];
 
   try {
@@ -401,32 +418,42 @@ async function bateria(admin) {
     grupo('Salas');
     if (ADM?.token) {
       await teste('create_room → 201 com room_id', async () => {
-        const { data, problemas } = await chamar(cAdm, { op: 'create_room', token: ADM.token, name: `Sala Teste ${sufixo}`, capacity: '10', location: 'Bloco T - teste', resources: ['projetor'] }, { status: '201', message: 'Sala cadastrada com sucesso' });
-        if (data?.status === '201') Object.assign(sala, { id: data.room_id, capacidade: 10, criada: true });
+        const { data, problemas } = await chamar(cAdm, { op: 'create_room', token: ADM.token, name: `Sala Teste ${sufixo}`, capacity: '10', location: 'Bloco T - teste', resources: ['projetor'], days: SALA_DIAS, slots: SALA_SLOTS }, { status: '201', message: 'Sala cadastrada com sucesso' });
+        if (data?.status === '201') Object.assign(sala, { id: data.room_id, capacidade: 10, criada: true, days: SALA_DIAS, slots: SALA_SLOTS });
         return problemas;
       });
+      await teste('create_room sem days e slots → 400 (v2.7)', async () =>
+        (await chamar(cAdm, { op: 'create_room', token: ADM.token, name: `Sala Sem Horario ${sufixo}`, capacity: '10', location: 'Bloco T', resources: [] }, { status: '400', message: 'Dados da sala em formato invalido' })).problemas);
+      await teste('create_room com horário fora da tabela da UTFPR → 400 (v2.7)', async () =>
+        (await chamar(cAdm, { op: 'create_room', token: ADM.token, name: `Sala Horario Errado ${sufixo}`, capacity: '10', location: 'Bloco T', resources: [], days: ['seg'], slots: ['M1', '14:00'] }, { status: '400', message: 'Dados da sala em formato invalido' })).problemas);
       await teste('create_room com nome repetido → 409', async () => {
         precisa(sala.criada, 'a sala de teste não foi criada');
-        return (await chamar(cAdm, { op: 'create_room', token: ADM.token, name: `Sala Teste ${sufixo}`, capacity: '10', location: 'Bloco T - teste', resources: [] }, { status: '409', message: 'Sala ja cadastrada' })).problemas;
+        return (await chamar(cAdm, { op: 'create_room', token: ADM.token, name: `Sala Teste ${sufixo}`, capacity: '10', location: 'Bloco T - teste', resources: [], days: ['seg'], slots: ['M1'] }, { status: '409', message: 'Sala ja cadastrada' })).problemas;
       });
       await teste('usuário comum em create_room → 403', async () => {
         precisa(A.token, 'o login falhou');
-        return (await chamar(cA, { op: 'create_room', token: A.token, name: `Sala Outra ${sufixo}`, capacity: '10', location: 'Bloco T', resources: [] }, { status: '403', message: 'Permissao insuficiente' })).problemas;
+        return (await chamar(cA, { op: 'create_room', token: A.token, name: `Sala Outra ${sufixo}`, capacity: '10', location: 'Bloco T', resources: [], days: ['seg'], slots: ['M1'] }, { status: '403', message: 'Permissao insuficiente' })).problemas;
       });
     } else {
       await teste('escolher uma sala ativa já cadastrada para os testes', async () => {
         precisa(A.token, 'o login falhou');
         const { data, problemas } = await chamar(cA, { op: 'list_rooms', token: A.token }, { status: '200' });
-        const s = data?.rooms?.find((r) => r.room_status === 'active');
-        precisa(s, 'nenhuma sala ativa no servidor; rode com --admin para o testador criar uma');
-        Object.assign(sala, { id: s.room_id, capacidade: Number(s.capacity) });
+        const s = data?.rooms?.find((r) => r.room_status === 'active' && Array.isArray(r.days) && r.days.length && SLOTS_USADOS.every((x) => r.slots?.includes(x)));
+        precisa(s, `nenhuma sala ativa com os horários ${SLOTS_USADOS.join(', ')}; rode com --admin para o testador criar uma`);
+        Object.assign(sala, { id: s.room_id, capacidade: Number(s.capacity), days: s.days, slots: s.slots });
+        data1 = diaEm(30 + crypto.randomInt(60), s.days);
         return problemas;
       });
     }
     await teste('read_room → 200', async () => {
       precisa(sala.id && A.token, 'não há sala para testar');
       const { data, problemas } = await chamar(cA, { op: 'read_room', token: A.token, room_id: sala.id }, { status: '200' });
-      if (data?.status === '200' && data.room_id !== sala.id) problemas.push(falha(`room_id ${JSON.stringify(data.room_id)}; esperado ${JSON.stringify(sala.id)}`));
+      if (data?.status === '200') {
+        if (data.room_id !== sala.id) problemas.push(falha(`room_id ${JSON.stringify(data.room_id)}; esperado ${JSON.stringify(sala.id)}`));
+        if (sala.criada && JSON.stringify(data.days) !== JSON.stringify(SALA_DIAS)) problemas.push(falha(`days ${JSON.stringify(data.days)}; a sala foi criada com ${JSON.stringify(SALA_DIAS)}`));
+        if (sala.criada && JSON.stringify(data.slots) !== JSON.stringify(SALA_SLOTS)) problemas.push(falha(`slots ${JSON.stringify(data.slots)}; a sala foi criada com ${JSON.stringify(SALA_SLOTS)}`));
+        if ('agenda' in data) problemas.push(falha('sem date, a resposta não deve trazer agenda'));
+      }
       return problemas;
     });
     await teste('read_room de sala inexistente → 404', async () => {
@@ -448,15 +475,23 @@ async function bateria(admin) {
     });
     await teste('list_rooms com date, start_time e end_time → 200 com available', async () => {
       precisa(A.token, 'o login falhou');
-      const { data, problemas } = await chamar(cA, { op: 'list_rooms', token: A.token, date: data1, start_time: '14:00', end_time: '16:00' }, { status: '200' });
+      const { data, problemas } = await chamar(cA, { op: 'list_rooms', token: A.token, date: data1, start_time: '13:00', end_time: '14:40' }, { status: '200' });
       if (data?.status === '200' && data.rooms?.some((r) => !('available' in r))) problemas.push(falha('com o trio de horário, toda sala deve trazer available'));
       return problemas;
     });
     if (sala.criada) {
-      await teste('update_room mudando a capacidade → 200', async () => {
-        const r = await chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: '12', location: '', resources: ['projetor'], room_status: '' }, { status: '200', message: 'Sala atualizada com sucesso' });
+      await teste('update_room mudando a capacidade, com days e slots [] → 200', async () => {
+        const r = await chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: '12', location: '', resources: ['projetor'], room_status: '', days: [], slots: [] }, { status: '200', message: 'Sala atualizada com sucesso' });
         if (r.data?.status === '200') sala.capacidade = 12;
         return r.problemas;
+      });
+      await teste('depois do update_room, [] manteve days e slots (regra 8.6)', async () => {
+        const { data, problemas } = await chamar(cAdm, { op: 'read_room', token: ADM.token, room_id: sala.id }, { status: '200' });
+        if (data?.status === '200') {
+          if (data.capacity !== '12') problemas.push(falha(`capacity ${JSON.stringify(data.capacity)}; esperado "12"`));
+          if (JSON.stringify(data.days) !== JSON.stringify(SALA_DIAS) || JSON.stringify(data.slots) !== JSON.stringify(SALA_SLOTS)) problemas.push(falha(`days/slots mudaram: ${JSON.stringify(data.days)} ${JSON.stringify(data.slots)}; [] é "não alterar"`));
+        }
+        return problemas;
       });
     }
 
@@ -465,52 +500,95 @@ async function bateria(admin) {
     const guardar = (data, dono) => { if (data?.status === '201') reservas.push({ id: data.reservation_id, dono }); return data?.reservation_id; };
     await teste('check_availability num horário livre → available "true"', async () => {
       precisa(sala.id && A.token, 'não há sala para testar');
-      const { data, problemas } = await chamar(cA, { op: 'check_availability', token: A.token, room_id: sala.id, date: data1, start_time: '14:00', end_time: '16:00' }, { status: '200' });
+      const { data, problemas } = await chamar(cA, { op: 'check_availability', token: A.token, room_id: sala.id, date: data1, start_time: '13:00', end_time: '14:40' }, { status: '200' });
       if (data?.status === '200' && data.available !== 'true') {
-        if (!sala.criada) throw new Pulo(`o horário ${data1} 14:00 já está ocupado nessa sala; rode de novo`);
+        if (!sala.criada) throw new Pulo(`o horário ${data1} 13:00 já está ocupado nessa sala; rode de novo`);
         problemas.push(falha(`available ${JSON.stringify(data.available)}; a sala de teste está vazia`));
       }
       return problemas;
     });
     await teste('create_reservation → 201 com reservation_id', async () => {
       precisa(sala.id && A.token, 'não há sala para testar');
-      const r = await chamar(cA, reserva(A.token, '14:00', '16:00'), { status: '201', message: 'Reserva realizada com sucesso' });
+      const r = await chamar(cA, reserva(A.token, '13:00', '14:40'), { status: '201', message: 'Reserva realizada com sucesso' });
       sala.reservaA = guardar(r.data, A);
       return r.problemas;
     });
     await teste('check_availability no horário reservado → available "false"', async () => {
       precisa(sala.reservaA, 'a reserva não foi criada');
-      const { data, problemas } = await chamar(cA, { op: 'check_availability', token: A.token, room_id: sala.id, date: data1, start_time: '15:00', end_time: '15:30' }, { status: '200' });
+      const { data, problemas } = await chamar(cA, { op: 'check_availability', token: A.token, room_id: sala.id, date: data1, start_time: '13:50', end_time: '14:40' }, { status: '200' });
       if (data?.status === '200' && data.available !== 'false') problemas.push(falha(`available ${JSON.stringify(data.available)}; o horário está reservado`));
       return problemas;
     });
     await teste('outra reserva no mesmo horário → 409', async () => {
       precisa(sala.reservaA && B.token, 'falta a reserva ou o segundo usuário');
-      const r = await chamar(cB, reserva(B.token, '15:00', '17:00'), { status: '409', message: 'Sala ja reservada no periodo solicitado' });
+      const r = await chamar(cB, reserva(B.token, '13:50', '15:30'), { status: '409', message: 'Sala ja reservada no periodo solicitado' });
       guardar(r.data, B);
       return r.problemas;
     });
     await teste('reserva que começa no fim da outra → 201 (regra 5.4)', async () => {
       precisa(sala.reservaA && B.token, 'falta a reserva ou o segundo usuário');
-      const r = await chamar(cB, reserva(B.token, '16:00', '17:00'), { status: '201' });
+      const r = await chamar(cB, reserva(B.token, '14:40', '15:30'), { status: '201' });
       sala.reservaB = guardar(r.data, B);
       return r.problemas;
     });
+    await teste('read_room com date → agenda com livre/indisponivel e quem reservou (regra 8.4)', async () => {
+      precisa(sala.reservaA && sala.reservaB, 'faltam as duas reservas');
+      const { data, problemas } = await chamar(cB, { op: 'read_room', token: B.token, room_id: sala.id, date: data1 }, { status: '200' });
+      if (data?.status !== '200') return problemas;
+      if (!Array.isArray(data.agenda)) return [...problemas, falha('com date, a resposta deve trazer agenda')];
+      const h = Object.fromEntries(data.agenda.map((x) => [x.slot, x]));
+      const ordem = Object.keys(HORARIOS).filter((x) => sala.slots.includes(x));
+      const veio = data.agenda.map((x) => x.slot);
+      if (JSON.stringify(veio) !== JSON.stringify(ordem)) problemas.push(falha(`agenda com ${JSON.stringify(veio)}; esperado um item por horário da sala, na ordem da tabela: ${JSON.stringify(ordem)}`));
+      for (const x of ['T1', 'T2']) {
+        if (h[x]?.slot_status !== 'indisponivel') problemas.push(falha(`${x} veio ${JSON.stringify(h[x]?.slot_status)}; está reservado`));
+        if (h[x]?.user !== A.user) problemas.push(falha(`${x}: user ${JSON.stringify(h[x]?.user)}; quem reservou foi ${A.user}`));
+        if (h[x] && 'reservation_id' in h[x]) problemas.push(falha(`${x}: o reservation_id de reserva de outro usuário não pode aparecer`));
+      }
+      if (h.T3?.user !== B.user || h.T3?.reservation_id !== sala.reservaB) problemas.push(falha(`T3 é reserva do próprio usuário: esperado user ${B.user} e reservation_id ${sala.reservaB}`));
+      if (sala.criada && h.T4?.slot_status !== 'livre') problemas.push(falha(`T4 veio ${JSON.stringify(h.T4?.slot_status)}; está livre`));
+      return problemas;
+    });
     await teste('end_time antes do start_time → 400', async () => {
       precisa(sala.id && A.token, 'não há sala para testar');
-      const r = await chamar(cA, reserva(A.token, '12:00', '11:00'), { status: '400', message: 'Dados da reserva em formato invalido' });
+      const r = await chamar(cA, reserva(A.token, '14:40', '13:50'), { status: '400', message: 'Dados da reserva em formato invalido' });
       guardar(r.data, A);
       return r.problemas;
     });
     await teste('data passada → 400', async () => {
       precisa(sala.id && A.token, 'não há sala para testar');
-      const r = await chamar(cA, reserva(A.token, '10:00', '11:00', { date: dia(-1) }), { status: '400', message: 'Dados da reserva em formato invalido' });
+      const r = await chamar(cA, reserva(A.token, '10:20', '11:10', { date: dia(-1) }), { status: '400', message: 'Dados da reserva em formato invalido' });
       guardar(r.data, A);
       return r.problemas;
     });
+    await teste('horário fora da tabela da UTFPR (14:00–16:00) → 400 (regra 8.2)', async () => {
+      precisa(sala.id && A.token, 'não há sala para testar');
+      const r = await chamar(cA, reserva(A.token, '14:00', '16:00'), { status: '400', message: 'Dados da reserva em formato invalido' });
+      guardar(r.data, A);
+      return r.problemas;
+    });
+    await teste('reserva num horário em que a sala não funciona → 409 (regra 8.3)', async () => {
+      precisa(sala.id && A.token, 'não há sala para testar');
+      const x = Object.keys(HORARIOS).find((c) => !sala.slots.includes(c));
+      if (!x) throw new Pulo('a sala funciona em todos os horários');
+      const r = await chamar(cA, reserva(A.token, ...HORARIOS[x], { participants: '2' }), { status: '409', message: 'Horario fora do funcionamento da sala' });
+      guardar(r.data, A);
+      return r.problemas;
+    });
+    await teste('reserva e check_availability num dia em que a sala não funciona → 409 e "false" (regra 8.3)', async () => {
+      precisa(sala.id && A.token, 'não há sala para testar');
+      const dias = DIAS.filter((d) => !sala.days.includes(d));
+      if (!dias.length) throw new Pulo('a sala funciona todos os dias');
+      const outroDia = diaEm(30 + crypto.randomInt(60), dias);
+      const r = await chamar(cA, reserva(A.token, '13:00', '13:50', { date: outroDia, participants: '2' }), { status: '409', message: 'Horario fora do funcionamento da sala' });
+      guardar(r.data, A);
+      const c = await chamar(cA, { op: 'check_availability', token: A.token, room_id: sala.id, date: outroDia, start_time: '13:00', end_time: '13:50' }, { status: '200' });
+      if (c.data?.status === '200' && c.data.available !== 'false') c.problemas.push(falha(`check_availability em ${outroDia} (${diaSemana(outroDia)}) deu available ${JSON.stringify(c.data.available)}; a sala não funciona nesse dia`));
+      return [...r.problemas, ...c.problemas];
+    });
     await teste('participants acima da capacity → 400', async () => {
       precisa(sala.id && A.token, 'não há sala para testar');
-      const r = await chamar(cA, reserva(A.token, '12:00', '13:00', { participants: String(sala.capacidade + 1) }), { status: '400', message: 'Dados da reserva em formato invalido' });
+      const r = await chamar(cA, reserva(A.token, '12:00', '12:50', { participants: String(sala.capacidade + 1) }), { status: '400', message: 'Dados da reserva em formato invalido' });
       guardar(r.data, A);
       return r.problemas;
     });
@@ -549,11 +627,11 @@ async function bateria(admin) {
     });
     await teste('update_reservation estendendo por cima de outra reserva → 409', async () => {
       precisa(sala.reservaA && sala.reservaB, 'faltam as duas reservas');
-      return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '16:30', topic: '', participants: '' }, { status: '409', message: 'Sala ja reservada no periodo solicitado' })).problemas;
+      return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '15:30', topic: '', participants: '' }, { status: '409', message: 'Sala ja reservada no periodo solicitado' })).problemas;
     });
     await teste('update_reservation encurtando ("" no resto) → 200', async () => {
       precisa(sala.reservaA, 'a reserva não foi criada');
-      return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '15:30', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' })).problemas;
+      return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '13:50', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' })).problemas;
     });
     if (sala.criada) {
       await teste('delete_room com reservas futuras → 409', async () => {
@@ -564,7 +642,7 @@ async function bateria(admin) {
     await teste('duas reservas simultâneas no mesmo horário → uma 201 e uma 409 (regra 5.1, 5 rodadas)', async () => {
       precisa(sala.id && A.token && B.token, 'faltam a sala ou os dois usuários');
       const problemas = [];
-      for (const [ini, fim] of [['07:00', '08:00'], ['09:00', '10:00'], ['11:00', '12:00'], ['18:00', '19:00'], ['20:00', '21:00']]) {
+      for (const [ini, fim] of ['M1', 'M2', 'M3', 'T5', 'T6'].map((x) => HORARIOS[x])) {
         const c1 = new Conexao();
         const c2 = new Conexao();
         await Promise.all([c1.abrir(), c2.abrir()]);

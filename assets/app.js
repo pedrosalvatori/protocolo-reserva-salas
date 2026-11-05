@@ -101,15 +101,25 @@ function jsonHtml(s) {
 const codeBlock = (line, label = '') => `<div class="highlight-code">${label ? `<div class="code-label">${label}</div>` : ''}<button class="copy-to-clipboard" type="button" data-copy="${esc(line)}" title="Copiar" aria-label="Copiar">${ICON.copy}</button><pre class="microlight">${jsonHtml(line)}</pre></div>`;
 
 function fieldInfo(s, example) {
-  let main = s, keep = false;
-  if (Array.isArray(s.anyOf)) { main = s.anyOf.find((x) => x.const !== '') || s.anyOf[0]; keep = s.anyOf.some((x) => x.const === ''); }
+  let main = s, keep = '';
+  if (Array.isArray(s.anyOf)) {
+    main = s.anyOf.find((x) => x.const !== '' && x.maxItems !== 0) || s.anyOf[0];
+    if (s.anyOf.some((x) => x.const === '')) keep = '<code>""</code> = não alterar';
+    else if (s.anyOf.some((x) => x.maxItems === 0)) keep = '<code>[]</code> = não alterar';
+  }
   const type = main.type === 'array' ? `array[${main.items?.type || 'object'}]` : (main.type || 'string');
+  const el = main.type === 'array' && main.items ? main.items : main; // nas listas, os valores vêm dos itens
   const meta = [];
   if (has(main, 'const')) meta.push(['valor', `<code>${esc(JSON.stringify(main.const))}</code>`]);
-  if (main.enum) meta.push(['valores', main.enum.map((v) => `<code>${esc(JSON.stringify(v))}</code>`).join(' ')]);
-  if (main.pattern) meta.push(['formato', `<code class="pattern">${esc(main.pattern)}</code>`]);
+  const hor = el['x-horarios'];
+  if (hor) meta.push(['horários', Object.entries(hor).map(([c, [a, b]]) => `<code>${esc(c)}</code>&nbsp;${esc(a)}–${esc(b)}`).join(' · ')]);
+  else if (el.enum) meta.push(['valores', el.enum.map((v) => `<code>${esc(JSON.stringify(v))}</code>`).join(' ')]);
+  if (el.pattern) meta.push(['formato', `<code class="pattern">${esc(el.pattern)}</code>`]);
+  if (main.type === 'array' && (main.minItems || main.uniqueItems)) {
+    meta.push(['lista', [main.minItems ? `pelo menos ${main.minItems} item` : '', main.uniqueItems ? 'sem repetir' : ''].filter(Boolean).join(', ')]);
+  }
   if (has(main, 'default')) meta.push(['padrão', `<code>${esc(JSON.stringify(main.default))}</code>`]);
-  if (keep) meta.push(['vazio', '<code>""</code> = não alterar']);
+  if (keep) meta.push(['vazio', keep]);
   if (example !== undefined && !has(main, 'const')) meta.push(['exemplo', `<code>${esc(typeof example === 'string' ? JSON.stringify(example) : oneLine(example))}</code>`]);
   return { type, desc: s.description || main.description || '', meta };
 }
@@ -324,7 +334,7 @@ function schemasHtml(spec) {
     <h2 class="models-title"><button type="button" aria-expanded="true">Schemas <span class="arrow">${ICON.chevron}</span></button></h2>
     <div class="models-body">
       <div class="model-group"><h3>Campos · dicionário <span class="muted">(${fields.length})</span></h3><div class="table-container"><table><thead><tr><th>Campo</th><th>Tipo</th><th>Formato</th><th>Descrição</th></tr></thead><tbody>
-        ${fields.map(([k, s]) => `<tr id="schema-${esc(k)}" data-search="${esc(norm(`${k} ${s.description || ''} ${s.pattern || ''} ${(s.enum || []).join(' ')}`))}"><td>${esc(k)}</td><td class="prop-type">${esc(s.type === 'array' ? `array[${s.items?.type}]` : s.type)}</td><td>${fmt(s)}</td><td>${mdInline(s.description || '')}</td></tr>`).join('')}
+        ${fields.map(([k, s]) => `<tr id="schema-${esc(k)}" data-search="${esc(norm(`${k} ${s.description || ''} ${s.pattern || ''} ${(s.enum || s.items?.enum || []).join(' ')}`))}"><td>${esc(k)}</td><td class="prop-type">${esc(s.type === 'array' ? `array[${s.items?.type || 'object'}]` : s.type)}</td><td>${fmt(s)}</td><td>${mdInline(s.description || '')}</td></tr>`).join('')}
       </tbody></table></div></div>
       <div class="model-group"><h3>Registros das listagens <span class="muted">(${records.length})</span></h3><div class="records">
         ${records.map(([k, s]) => `<div id="schema-${esc(k)}" class="record" data-search="${esc(norm(`${k} ${s.title || ''} ${Object.keys(s.properties).join(' ')}`))}">${modelBox(k, s)}<p class="model-desc">${mdInline(s.description || '')}</p></div>`).join('')}

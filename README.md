@@ -17,6 +17,7 @@ de mensagens. A página acima é montada a partir dele: editou o YAML e deu push
 | Mensagem | 1 objeto JSON em **uma linha**, UTF-8, terminado por `\n`, até 8192 bytes. |
 | Interação | Cada requisição recebe exatamente 1 resposta; o `op` da resposta é o `op` da requisição + `_response`. |
 | Valores | Todos são strings: `"capacity": "12"`, `"available": "true"`. |
+| Horários | Horários de aula da UTFPR (M1–M6, T1–T6, N1–N5). Cada sala diz em que dias (`days`) e horários (`slots`) funciona. |
 | Autenticação | O `login` devolve um `token` de 64 hex, que vai em toda requisição, exceto `register` e `login`. Vale 30 min sem uso. |
 | Operações | 21: autenticação (3), próprio cadastro (3), administrador (4), salas (5) e reservas (6). |
 
@@ -50,12 +51,12 @@ node scripts/testar-servidor.mjs 127.0.0.1 5000
 Se o grupo trocou a senha do admin, passe a conta com `--admin email:senha`. Para pular os testes de admin, use
 `--admin -`.
 
-Ele roda mais de 70 testes e confere cada resposta contra o `asyncapi.yaml`, inclusive o texto exato da
+Ele roda mais de 80 testes e confere cada resposta contra o `asyncapi.yaml`, inclusive o texto exato da
 `message`. Os testes cobrem:
 
 - formato e erros de protocolo;
 - cadastro, login, token e próprio cadastro;
-- administrador e salas (com o admin inicial);
+- administrador e salas (com o admin inicial), incluindo dias, horários e a agenda da sala;
 - reservas, incluindo duas reservas no mesmo horário ao mesmo tempo, que testa o lock por sala;
 - sessão, incluindo dois logins simultâneos;
 - remoção de conta.
@@ -155,9 +156,9 @@ sequenceDiagram
   participant TB as Thread B
   participant B as Cliente B
   par pedido do cliente A
-    A->>TA: create_reservation sala 1, 2026-09-15, 14:00 às 16:00
+    A->>TA: create_reservation sala 1, 2026-09-15, 13:00 às 14:40
   and pedido do cliente B
-    B->>TB: create_reservation sala 1, 2026-09-15, 14:00 às 16:00
+    B->>TB: create_reservation sala 1, 2026-09-15, 13:00 às 14:40
   end
   TA->>L: acquire
   TB->>L: acquire
@@ -191,6 +192,41 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 10. **`update_reservation` pelo admin:** `read_reservation` e `delete_reservation` dizem que o admin age sobre qualquer reserva; `update_reservation` não diz. No contrato ficou só o dono.
 
 ## Versões
+
+### 2.7.0 (dias e horários das salas)
+
+Pedido da Entrega 2 (itens d, e, f): cadastrar, ler e alterar salas com dias da semana e horários.
+
+- **Sala ganha `days` e `slots`.** `days` são os dias da semana em que a sala funciona (`dom`, `seg`, `ter`,
+  `qua`, `qui`, `sex`, `sab`); `slots` são os horários de aula da UTFPR em que ela funciona. Os dois são
+  obrigatórios no `create_room` e voltam no `read_room` e no `list_rooms`. No `update_room`, ausente ou `[]`
+  mantém o que estava.
+
+  ```json
+  {"op": "create_room", "token": "...", "name": "Sala de Estudo B12", "capacity": "12", "location": "Bloco B - 1 andar", "resources": ["projetor"], "days": ["seg", "ter", "qua", "qui", "sex"], "slots": ["M1", "M2", "M3", "T1", "T2", "T3"]}
+  ```
+
+- **Reservas seguem a tabela da UTFPR.** `start_time` é o início de um horário e `end_time` o fim de um horário
+  (ex.: `13:00`–`14:40` = T1 + T2). Outro valor (como `14:00`) → 400. Dia ou horário em que a sala não funciona →
+  **409 "Horario fora do funcionamento da sala"**, e `check_availability`/`list_rooms` respondem `"available": "false"`.
+
+  | turno | 1 | 2 | 3 | 4 | 5 | 6 |
+  |---|---|---|---|---|---|---|
+  | M (manhã) | 07:30–08:20 | 08:20–09:10 | 09:10–10:00 | 10:20–11:10 | 11:10–12:00 | 12:00–12:50 |
+  | T (tarde) | 13:00–13:50 | 13:50–14:40 | 14:40–15:30 | 15:50–16:40 | 16:40–17:30 | 17:30–18:20 |
+  | N (noite) | 18:40–19:30 | 19:30–20:20 | 20:20–21:10 | 21:20–22:10 | 22:10–23:00 | |
+
+- **Agenda da sala.** `read_room` com `date` devolve `agenda`: um item por horário da sala, com `slot_status`
+  `"livre"` ou `"indisponivel"` e, nos reservados, quem reservou (`user`). O `reservation_id` só vai para o admin
+  e para o dono da reserva.
+- `room_status`: `active` = livre para reservas; `inactive` = indisponível (manutenção, limpeza).
+
+O que cada grupo precisa mudar:
+
+- **Servidor:** guardar `days` e `slots` da sala; aceitar só horários da tabela; responder o 409 novo; montar a
+  agenda do `read_room`.
+- **Cliente:** no cadastro e na edição de sala, pedir os dias e os horários (caixas de seleção); nas reservas,
+  escolher horários da tabela em vez de digitar a hora; mostrar a agenda da sala.
 
 ### 2.6.0 (admin inicial)
 
