@@ -14,7 +14,7 @@ de mensagens. A página acima é montada a partir dele: editou o YAML e deu push
 | | |
 |---|---|
 | Transporte | TCP. O servidor escuta numa porta digitada e usa uma thread por conexão. |
-| Mensagem | 1 objeto JSON em **uma linha**, UTF-8, terminado por `\n`, até 8192 bytes. |
+| Mensagem | 1 objeto JSON em **uma linha**, UTF-8, terminado por `\n`. Requisição até 8192 bytes; resposta sem limite. |
 | Interação | Cada requisição recebe exatamente 1 resposta; o `op` da resposta é o `op` da requisição + `_response`. |
 | Valores | Todos são strings: `"capacity": "12"`, `"available": "true"`. |
 | Horários | Código da UTFPR, dia + turno + aula: `2M1` = segunda, manhã, primeiro horário. Cada sala lista em `slots` os horários em que funciona. |
@@ -51,7 +51,7 @@ node scripts/testar-servidor.mjs 127.0.0.1 5000
 Se o grupo trocou a senha do admin, passe a conta com `--admin email:senha`. Para pular os testes de admin, use
 `--admin -`.
 
-Ele roda mais de 90 testes e confere cada resposta contra o `asyncapi.yaml`, inclusive o texto exato da
+Ele roda mais de 100 testes e confere cada resposta contra o `asyncapi.yaml`, inclusive o texto exato da
 `message`. Os testes cobrem:
 
 - formato e erros de protocolo;
@@ -95,26 +95,33 @@ Obrigatória desde a v2.9 (seção 4 do contrato). O primeiro passo que falhar d
 flowchart TD
   A(["linha recebida até o LF"]) --> B{"mais de 8192 bytes?"}
   B -- sim --> E1["error · 400<br/>Mensagem excede o tamanho maximo"]
-  B -- não --> C{"JSON válido?"}
+  B -- não --> C{"JSON válido, objeto,<br/>com op string?"}
   C -- não --> E2["error · 400<br/>Requisicao invalida"]
   C -- sim --> D{"op conhecida?"}
   D -- não --> E3["error · 400<br/>Operacao desconhecida"]
-  D -- sim --> F{"campos presentes (inclusive o token),<br/>strings, regex, data existente,<br/>algo para atualizar?"}
-  F -- não --> R400["400 · mensagem da operação<br/>ou Nenhum dado para atualizar"]
-  F -- sim --> G{"register ou login?"}
-  G -- sim --> L
+  D -- sim --> F{"campos presentes (inclusive o token),<br/>tipos, regex, data existente;<br/>reserva nova e consultas: fim depois do início;<br/>reserva nova: início no futuro"}
+  F -- não --> R400["400 · Token em formato invalido<br/>ou mensagem de formato da operação"]
+  F -- sim --> F2{"algo para atualizar?<br/>(só nas atualizações)"}
+  F2 -- não --> R400n["400 · Nenhum dado para atualizar"]
+  F2 -- sim --> G{"register ou login?"}
+  G -- register --> L
+  G -- login --> LG{"email e senha corretos?"}
+  LG -- não --> R401L["401 · Email ou senha incorretos"]
+  LG -- sim --> L
   G -- não --> H{"token ativo?"}
   H -- não --> R401["401 · Token invalido ou expirado"]
   H -- sim --> I["renova a validade: 30 min"]
   I --> J{"op de admin ou scope all:<br/>token na whitelist?"}
   J -- não --> R403["403 · Permissao insuficiente"]
-  J -- sim --> K{"usuário, sala ou reserva existe?"}
+  J -- sim --> K{"usuário, sala ou reserva<br/>da operação existe?"}
   K -- não --> R404["404 · Usuario / Sala / Reserva nao encontrada"]
-  K -- sim --> M{"dono da reserva?<br/>último admin? senha certa?"}
+  K -- sim --> M{"dono da reserva?<br/>senha certa? último admin?"}
   M -- não --> R403b["403 · da operação"]
-  M -- sim --> N{"participants cabe na sala?<br/>horário novo válido?"}
+  M -- sim --> E{"reserva já encerrada?<br/>(alterar ou cancelar)"}
+  E -- sim --> R409e["409 · Reserva ja encerrada"]
+  E -- não --> N{"participants cabe na sala?<br/>horário alterado válido?"}
   N -- não --> R400b["400 · Dados da reserva em formato invalido"]
-  N -- sim --> L{"conflito com o estado atual?<br/>reservas: dentro do lock por room_id"}
+  N -- sim --> L{"conflito com o estado atual?<br/>dentro do lock por room_id"}
   L -- sim --> R409["409 · conflito"]
   L -- não --> OK(["executa → 200 / 201"])
   OK -. falha inesperada .-> R500["500 · Erro interno do servidor"]
@@ -196,6 +203,30 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 10. **Resolvida na v2.9.** `update_reservation` é só do dono: o admin lê e cancela reservas de terceiros, mas não altera (403).
 
 ## Versões
+
+### 2.9.1 (revisão do contrato)
+
+Uma revisão do contrato inteiro achou pontos em que dois grupos podiam implementar diferente e os dois dizerem que
+seguem o protocolo. Nenhuma resposta nova: só regras explicitadas.
+
+- **Tamanho:** o limite de 8192 bytes vale só para **requisições**. Respostas não têm limite, porque `list_rooms` com
+  umas 15 salas já passa disso. O cliente lê até o `\n` (regra 1.6). O testador parou de cobrar o limite nas respostas.
+- **Filtros opcionais** (`list_rooms`, `list_reservations`, `date` do `read_room`): filtro não preenchido é **omitido**;
+  `""` ou `null` → 400 (regra 2.14).
+- **Sessão:** trocar `user`, `password` ou `role` (o próprio ou pelo admin) **não** encerra a sessão; toda requisição com
+  token ativo renova a validade (regras 3.3 e 3.4).
+- **Linhas inválidas:** JSON que não é objeto, sem `op` ou com `op` que não é string → "Requisicao invalida"; `op`
+  desconhecida (inclusive `login_response`) → "Operacao desconhecida" (regra 4.1). Depois de qualquer erro a conexão
+  continua aberta (regra 1.12).
+- **Token fora do formato:** "Token em formato invalido" no `logout`, `read_user`, `admin_list_users` e agora também no
+  `delete_user`; nas outras operações, a mensagem de formato da operação (regra 4.2).
+- **Ordem completa** (diagrama acima): "Reserva ja encerrada" logo depois do 403 de dono; formato antes de "nada para
+  atualizar"; no `delete_user`, senha incorreta antes de último admin; no `update_room`, nome repetido antes de capacidade.
+- **Lock por sala** também no `update_room` e no `delete_room` (regra 5.5).
+- `update_reservation` com a chave `room_id` ou `date` → 400 (regra 9.10). Consultas com `end_time` ≤ `start_time` → 400
+  (regra 9.11). `list_reservations` com `room_id` de sala inexistente → 200 com `count` "0" (regra 9.12).
+- Valor igual ao atual conta como alteração (regra 2.15). `resources` pode ser omitido no `update_room`. `email` até
+  100 caracteres.
 
 ### 2.9.0 (dúvidas de implementação)
 
@@ -302,7 +333,7 @@ O que cada grupo precisa mudar: no servidor, criar o admin inicial ao iniciar qu
 ### 2.5.0 (whitelist de tokens de admin)
 
 - **Só a whitelist libera ações de admin.** O servidor mantém uma lista dos tokens com poder de admin, e as
-  operações de admin (`admin_*`, criar/alterar/remover sala, `scope: "all"`, ações sobre reservas de terceiros)
+  operações de admin (`admin_*`, criar/alterar/remover sala, `scope: "all"`, ler e cancelar reservas de terceiros)
   só aceitam tokens dessa lista. Fora dela: 403 "Permissao insuficiente" (regra 3.14).
 - **O token entra na lista** no login de uma conta admin, ou quando um admin promove um usuário que está logado.
   **Sai da lista** na hora em que a conta é rebaixada, no logout, na expiração e na remoção da conta, sem esperar

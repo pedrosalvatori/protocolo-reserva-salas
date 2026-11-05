@@ -1,6 +1,6 @@
 // Validador JSON Schema mínimo, com mensagens em português, para o subconjunto usado no asyncapi.yaml:
-// type, const, enum, pattern, required, properties, items, minItems, maxItems, uniqueItems, allOf, anyOf, oneOf, not,
-// dependencies (forma de lista).
+// type, const, enum, pattern, minLength, maxLength, required, properties, items, minItems, maxItems, uniqueItems,
+// allOf, anyOf, oneOf, not, dependencies (forma de lista).
 // Num "not", a description vira a mensagem de erro e x-message (se houver) diz qual message o servidor deve responder.
 // O script scripts/validate.mjs confere que ele concorda com o Ajv em todos os exemplos e em variações inválidas.
 
@@ -34,6 +34,12 @@ export function validate(schema, data, path = '') {
   }
   if (schema.pattern && typeof data === 'string' && !new RegExp(schema.pattern, 'u').test(data)) {
     errs.push({ path, msg: `${at} fora do formato ${schema.pattern}` });
+  }
+  if (typeof data === 'string' && typeof schema.maxLength === 'number' && [...data].length > schema.maxLength) {
+    errs.push({ path, msg: `${at} passa de ${schema.maxLength} caracteres` });
+  }
+  if (typeof data === 'string' && typeof schema.minLength === 'number' && [...data].length < schema.minLength) {
+    errs.push({ path, msg: `${at} precisa de pelo menos ${schema.minLength} caracteres` });
   }
 
   if (typeOf(data) === 'object') {

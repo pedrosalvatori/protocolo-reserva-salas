@@ -48,6 +48,19 @@ export function variantsOf(msg) {
   return (p.properties?.message?.enum || []).map((m) => ({ status: st, message: m, extras: [], arrays: [], schema: null, name: null }));
 }
 
+// Qual 400 o servidor responde para uma requisição com erros de validação (seção 4 do contrato, regra 4.2):
+// 1) só "nada para atualizar" (todos os erros têm x-message) → essa message;
+// 2) token ausente ou fora do formato, numa operação que tem "Token em formato invalido" → essa;
+// 3) senão, a message de formato da operação.
+const NADA = 'Nenhum dado para atualizar';
+const TOKEN = 'Token em formato invalido';
+export function expected400(op, errs) {
+  const v400 = variantsOf(op?.res).filter((v) => v.status === '400').map((v) => v.message);
+  if (errs.length && errs.every((e) => e.expect)) return errs[0].expect;
+  if (errs.some((e) => e.path === 'token') && v400.includes(TOKEN)) return TOKEN;
+  return v400.find((m) => m !== NADA && m !== TOKEN) || v400[0];
+}
+
 // Operações do contrato indexadas pelo valor de "op": { id, op, req, res }
 export function operationsOf(spec) {
   const ops = new Map();

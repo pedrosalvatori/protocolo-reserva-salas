@@ -73,6 +73,18 @@ for (const msg of document.messages()) {
   }
 }
 
+// Os arquivos da página são pedidos com ?v=<versão> para o navegador não misturar arquivos novos com antigos do cache.
+// A versão tem que ser a do contrato: quem publica uma versão nova e esquece de trocar o ?v= é barrado aqui.
+const versao = document.info().version();
+const naoBate = [];
+for (const arq of ['index.html', 'assets/app.js']) {
+  for (const [, v] of fs.readFileSync(new URL(`../${arq}`, import.meta.url), 'utf8').matchAll(/\?v=([0-9A-Za-z.-]+)/g)) {
+    if (v !== versao) naoBate.push(`${arq}: ?v=${v}`);
+  }
+}
+naoBate.forEach((x) => console.log(`✗ ${x} diferente da versão do contrato (${versao}); troque todos os ?v= ao publicar`));
+if (naoBate.length) process.exit(1);
+
 invalid.forEach((f) => console.log(`✗ exemplo inválido: ${f}`));
 diverged.slice(0, 20).forEach((d) => console.log(`✗ validador da página diverge do Ajv em ${d}`));
 console.log(`\n${document.operations().length} operações · ${document.messages().length} mensagens · ${examples} exemplos · ${compared} casos comparados com o validador da página`);

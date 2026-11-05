@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.9.0
+  version: 2.9.1
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídos · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -22,39 +22,51 @@ info:
     | 1.3 | Codificação | UTF-8 nos dois lados. |
     | 1.4 | Formato | 1 mensagem = 1 objeto JSON em **linha única** (sem quebras de linha internas, sem indentação). |
     | 1.5 | Framing | Toda mensagem termina com LF (`\n`). O receptor lê até o `\n`. |
-    | 1.6 | Tamanho máximo | 8192 bytes, já incluindo o `\n`. Acima disso a mensagem é descartada e respondida com 400. |
+    | 1.6 | Tamanho máximo | **Requisição**: 8192 bytes, já incluindo o `\n`. Acima disso a linha é descartada até o próximo `\n` e respondida com 400. **Resposta**: sem limite (v2.9.1), porque as listagens crescem com os dados; o cliente lê até o `\n`. |
     | 1.7 | Interação | Requisição/resposta: toda requisição gera **exatamente uma** resposta, na mesma conexão. |
     | 1.8 | Nome da resposta | `op` da resposta = `op` da requisição + `_response` (ex.: `login` → `login_response`). |
     | 1.9 | Conexão | Mantida durante a sessão. Com 300 s de inatividade o servidor fecha a conexão, mas **não** invalida o token. |
     | 1.10 | Ordem dos campos | Irrelevante: o receptor nunca depende da ordem das chaves. |
     | 1.11 | Reconexão (v2.2) | Se a conexão caiu ou foi fechada por inatividade, o cliente abre outra e reenvia a requisição com o mesmo token. Requisição sem resposta não conta como concluída. |
+    | 1.12 | Depois de um erro (v2.9.1) | Depois de qualquer resposta, inclusive `error` e 4xx, a conexão continua aberta e o servidor segue lendo a próxima linha. |
 
     ## 2. Regras das chaves
 
     - **2.1** Toda mensagem (requisição e resposta) tem `op`; o emissor a escreve como primeira chave.
     - **2.2** Chaves em inglês, `snake_case`, minúsculas, sem acentos. `op` e nomes de chaves são case-sensitive (2.12).
     - **2.3** **Todos os valores são strings**, inclusive números, booleanos e datas (`"capacity": "12"`, `"available": "true"`).
-    - **2.4** Listas são arrays JSON de objetos cujos valores também são strings (`"rooms": [ {…}, {…} ]`).
+    - **2.4** Listas são arrays JSON: de objetos cujos valores são strings ou listas (`"rooms": [ {…}, {…} ]`), ou de
+      strings (`resources`, `slots`).
     - **2.5** Toda requisição envia `token`, exceto `register` e `login`.
     - **2.6 / 2.7** Toda resposta tem no mínimo `op`, `status` e `message`; `status` é o código numérico como string (`"200"`).
     - **2.8** `message` em português, sem acentos e sem emojis, **exatamente** como definido em cada operação.
     - **2.9** Campos desconhecidos são ignorados (interoperabilidade entre grupos).
-    - **2.10** Campo obrigatório ausente, `null` ou de tipo diferente de string → 400.
+    - **2.10** Campo obrigatório ausente → 400. Qualquer campo enviado com `null` ou tipo errado (string; array nos campos
+      de lista) → 400, inclusive os opcionais.
     - **2.11** `""` em atualização significa **não alterar**; em criação é inválido (400). Nas listas (`resources`,
       `slots`), `[]` em atualização também significa não alterar (v2.9).
     - **2.12** (v2.9) `user` e `email` só aceitam minúsculas: as regex reprovam maiúsculas (400) e o servidor não
       converte. O cliente pode converter para minúsculas antes de enviar.
-    - **2.13** (v2.4, ampliada na v2.9) **Toda atualização precisa mudar pelo menos um campo.** Respondem
+    - **2.13** (v2.4, ampliada na v2.9) **Toda atualização precisa ter pelo menos um campo preenchido.** Respondem
       **400 "Nenhum dado para atualizar"**: `update_user` com `user` e `password` vazios; `admin_update_user` com `user`,
-      `password` e `role` vazios; `update_room` com `name`, `capacity`, `location` e `room_status` vazios, `resources`
-      `[]` e `slots` ausente ou `[]`; `update_reservation` com `start_time`, `end_time`, `topic` e `participants` vazios.
+      `password` e `role` vazios; `update_room` com `name`, `capacity`, `location` e `room_status` vazios e `resources` e
+      `slots` ausentes ou `[]`; `update_reservation` com `start_time`, `end_time`, `topic` e `participants` vazios.
+      Esse 400 só vale quando não há outro erro de formato (seção 4, passo 2).
+    - **2.14** (v2.9.1) **Filtros opcionais** (`list_rooms`, `list_reservations`, `date` do `read_room`): ausente = sem
+      filtro. Se enviado, precisa ser válido: `""` ou `null` → 400 com a message de formato da operação. O cliente omite
+      o filtro que o usuário não preencheu.
+    - **2.15** (v2.9.1) **Valor igual ao atual** conta como alteração (200): a regra 2.13 só olha campos vazios, e a
+      unicidade (`user`, nome da sala) nunca conflita com o próprio registro.
 
     ## 3. Autenticação, token e perfis
 
     - **3.1** O token é gerado no login: 64 caracteres hexadecimais minúsculos (`^[a-f0-9]{64}$`).
     - **3.2** O servidor grava o token no banco, associado ao usuário; o cliente o guarda em memória durante a sessão.
-    - **3.3** Validade: 30 min sem uso; cada requisição válida renova a contagem. Token expirado → 401.
-    - **3.4** O logout invalida o token; um token invalidado nunca é reutilizado.
+    - **3.3** Validade: 30 min sem uso. Toda requisição que passa do 401 (token ativo) renova a contagem, qualquer que
+      seja a resposta depois (200, 403, 404, 409…). Token expirado → 401.
+    - **3.4** O logout invalida o token; um token invalidado nunca é reutilizado. (v2.9.1) Só o logout, a expiração e a
+      remoção da conta encerram uma sessão: alterar `user`, `password` ou `role` (no `update_user` ou pelo admin) não
+      encerra a sessão de ninguém.
     - **3.5** Sessão única: novo login com sessão ativa → 409.
     - **3.6** Perfis (`role`): `user` e `admin`. Todo `register` nasce `user`. O primeiro admin é o admin inicial (regra 3.15).
     - **3.7** Operações `admin_*` e criar/alterar/remover sala exigem `admin`. Token válido sem permissão → 403.
@@ -75,8 +87,8 @@ info:
       sessão e apagam **todas** as reservas do usuário (passadas e futuras). O `user` e o `email` ficam livres: um novo
       `register` com os mesmos dados responde 201. Assim ninguém herda reservas ou histórico de uma conta removida.
     - **3.14** (v2.5) **Whitelist de tokens de admin.** O servidor mantém uma lista (whitelist) dos tokens com poder de
-      admin, e só ela libera as operações de admin: `admin_*`, criar/alterar/remover sala, `scope: "all"` e ações sobre
-      reservas de terceiros. Um token entra na lista quando o login é de uma conta `admin`, ou quando um admin promove um
+      admin, e só ela libera as operações de admin: `admin_*`, criar/alterar/remover sala, `scope: "all"` e ler ou
+      cancelar reservas de terceiros (alterar, não: regra 9.9). Um token entra na lista quando o login é de uma conta `admin`, ou quando um admin promove um
       usuário que está logado. Sai quando a conta é rebaixada, no logout, na expiração e na remoção da conta. A mudança
       vale na hora, sem novo login. O `role` nunca vem do cliente: o valor do `login_response` só serve para montar a
       tela, e um `role` enviado em qualquer requisição (fora do `admin_update_user`) é ignorado. Token fora da lista → 403.
@@ -93,24 +105,33 @@ info:
 
     ## 4. Erros e ordem de validação
 
-    Linha acima do limite, JSON inválido ou `op` desconhecida → resposta `error` (ver operação **linha_invalida**).
+    - **4.1** (v2.9.1) Linha que não é uma requisição → resposta `error` (operação **linha_invalida**): acima do limite →
+      "Mensagem excede o tamanho maximo"; JSON inválido, JSON que não é objeto (`[]`, `42`), objeto sem `op` ou com `op`
+      que não é string → "Requisicao invalida"; `op` desconhecida, inclusive uma de resposta (`login_response`) →
+      "Operacao desconhecida".
+    - **4.2** (v2.9.1) Token ausente ou fora do formato → 400 "Token em formato invalido" nas operações que têm essa
+      resposta (`logout`, `read_user`, `admin_list_users`, `delete_user`); nas demais, a message de formato da operação.
     Qualquer operação pode responder **500**: `{"op": "<op>_response", "status": "500", "message": "Erro interno do servidor"}`.
     O servidor nunca fecha a conexão sem responder a uma requisição recebida por completo.
 
     **Ordem de validação** (obrigatória desde a v2.9; resolve a pendência 6). O primeiro passo que falhar define a resposta:
 
-    1. tamanho → JSON → `op` (resposta `error`);
-    2. **400 de formato**: campo obrigatório ausente (inclusive o token), tipo, regex, data inexistente no calendário,
-       nada para atualizar (regra 2.13); na criação de reserva, também `end_time` ≤ `start_time` e data e hora de início
-       no passado (regra 9.3);
+    1. tamanho → JSON → `op` (resposta `error`, regra 4.1);
+    2. **400 de formato**: campo ausente, `null`, tipo, regex (inclusive o token, regra 4.2), data inexistente no
+       calendário, `end_time` ≤ `start_time` quando os dois vêm na requisição (criação de reserva e consultas, regra
+       9.11), início no passado na criação de reserva (regra 9.3). Por último, nada para atualizar (regra 2.13);
     3. **401**: token sem sessão ativa;
     4. **403 de perfil**: operação de admin ou `scope: "all"` com token fora da whitelist;
-    5. **404**: usuário alvo, sala ou reserva inexistente, mesmo para quem não seria o dono;
-    6. **403 de dono e de regra**: reserva de terceiro, último admin, senha de confirmação incorreta;
-    7. **400 que depende do registro**: `participants` maior que a `capacity` da sala; no `update_reservation`, o
+    5. **404**: o usuário alvo, a sala ou a reserva da operação não existe, mesmo para quem não seria o dono (filtro de
+       listagem não dá 404, regra 9.12);
+    6. **403 de dono e de regra**: reserva de terceiro; no `delete_user`, senha incorreta antes de último admin;
+       no `admin_update_user`/`admin_delete_user`, último admin;
+    7. **409 "Reserva ja encerrada"** (`update_reservation`, `delete_reservation`);
+    8. **400 que depende do registro**: `participants` maior que a `capacity` da sala; no `update_reservation`, o
        horário resultante (valores novos + atuais) com `end_time` ≤ `start_time` ou `start_time` novo no passado;
-    8. **409**: conflitos, na ordem de cada operação (na reserva: sala `inactive` → fora do funcionamento → período ocupado);
-    9. executa (200/201).
+    9. **409**: conflitos, nesta ordem: na reserva, sala `inactive` → fora do funcionamento → período ocupado; no
+       `update_room`, nome já cadastrado → capacidade abaixo de reserva ativa;
+    10. executa (200/201).
 
     No `login` vale a ordem própria da regra 3.12.
 
@@ -120,6 +141,9 @@ info:
     - **5.2** `check_availability` é informativo: `"true"` não reserva nada nem garante a reserva seguinte.
     - **5.3** Dois clientes reservando a mesma sala e horário: o primeiro a obter o lock recebe 201; o segundo, 409.
     - **5.4** Há conflito quando `novo_inicio < fim_existente` **e** `novo_fim > inicio_existente`. Encostar (começar exatamente no fim de outra) **não** é conflito.
+    - **5.5** (v2.9.1) `update_room` e `delete_room` usam o mesmo lock por `room_id`: checar as reservas ativas
+      (capacidade, remoção) e gravar a sala acontecem sem uma reserva nova no meio, e uma sala que vira `inactive` não
+      recebe reserva começada antes.
 
     ## 6. Códigos de status
 
@@ -131,7 +155,7 @@ info:
     | 401 | Unauthorized | Token inválido, expirado ou invalidado (o servidor não tem sessão ativa para ele); no `login`, credenciais incorretas. | Descarta o token e volta ao login. |
     | 403 | Forbidden | Token válido, mas a ação não é permitida: usuário comum em op de admin, reserva de terceiro, último admin, senha de confirmação incorreta. | Informa o motivo e mantém a sessão; não repete. |
     | 404 | Not Found | Usuário alvo, sala ou reserva inexistente. | Informa e recarrega a listagem. |
-    | 409 | Conflict | Já cadastrado, sessão ativa, horário reservado, sala com reservas ativas, sala inativa, fora do funcionamento, capacidade abaixo de reserva ativa. | Mostra o conflito e oferece alternativa. |
+    | 409 | Conflict | Já cadastrado, `user` já em uso, sessão ativa, horário reservado, reserva já encerrada, sala com reservas ativas, sala inativa, fora do funcionamento, capacidade abaixo de reserva ativa. | Mostra o conflito e oferece alternativa. |
     | 500 | Internal Server Error | Falha inesperada no servidor. | Informa e permite nova tentativa; não descarta o token. |
 
     ## 7. Pendências encontradas ao modelar
@@ -208,22 +232,39 @@ info:
       reserva". Mudar só `topic` ou `participants` continua permitido.
     - **9.6** `update_room` com `capacity` menor que os `participants` de alguma reserva ativa da sala →
       **409 "Capacidade menor que participantes de reservas ativas"**.
-    - **9.7** `resources` no `update_room`: `[]` = não alterar; uma lista nova substitui a antiga inteira; `["0"]` (lista
+    - **9.7** `resources` no `update_room`: ausente ou `[]` = não alterar; uma lista nova substitui a antiga inteira; `["0"]` (lista
       só com o item `"0"`) apaga todos os recursos. Cada recurso segue `^[A-Za-z0-9 -]{1,30}$` e não pode ser `"0"`
       (400), inclusive no `create_room`.
     - **9.8** `delete_room` só remove sala sem reservas ativas (409 "Sala possui reservas ativas") e apaga junto as
       reservas encerradas dela, como a remoção de conta (regra 3.13).
     - **9.9** `update_reservation` é só do dono, inclusive para o admin (403 "Permissao insuficiente").
+    - **9.10** (v2.9.1) `update_reservation` com a chave `room_id` ou `date` → 400 "Dados da reserva em formato invalido"
+      (como `email` no `update_user`): para trocar de sala ou de dia, cancela-se e cria-se outra reserva.
+    - **9.11** (v2.9.1) Consultas com horário (`check_availability`, `list_rooms` com o trio) e `end_time` ≤ `start_time`
+      → 400 com a message de formato da operação.
+    - **9.12** (v2.9.1) `list_reservations` com `room_id` de sala inexistente → 200 com `"count": "0"`: filtro não dá 404.
 
     ## 10. Histórico de versões
 
+    - **2.9.1** (revisão do contrato; nenhuma resposta nova, só regras explicitadas)
+      - Limite de 8192 bytes só nas requisições; respostas sem limite (regra 1.6). Conexão aberta depois de erro (1.12).
+      - Filtro opcional vazio → 400, e o cliente o omite (2.14); valor igual ao atual é alteração (2.15).
+      - Mudar `user`/`password`/`role` não encerra sessão (3.4); toda requisição com token ativo renova a validade (3.3).
+      - Linhas inválidas (4.1) e token fora do formato (4.2) com message definida; `delete_user` ganhou "Token em
+        formato invalido".
+      - Ordem de validação completa: "Reserva ja encerrada" logo depois do 403 de dono; sub-ordens no `delete_user` e no
+        `update_room` (seção 4). Lock por sala também no `update_room` e no `delete_room` (5.5).
+      - `update_reservation` com `room_id`/`date` → 400 (9.10); consultas com `end_time` ≤ `start_time` → 400 (9.11);
+        `list_reservations` com sala inexistente → 200 vazio (9.12); `resources` pode ser omitido no `update_room`.
+      - `email` com no máximo 100 caracteres.
     - **2.9.0** (dúvidas de implementação; seções 4 e 9)
       - `update_room`: `resources` `[]` mantém e `["0"]` apaga; recursos com regex; `capacity` abaixo de reserva ativa →
         409 "Capacidade menor que participantes de reservas ativas".
       - `update_room` e `update_reservation` sem nada para mudar → 400 "Nenhum dado para atualizar" (regra 2.13).
       - `update_reservation`: mudar horário em sala `inactive` → 409 "Sala indisponivel para reserva"; só o dono altera.
       - Ordem de validação obrigatória, com 404 antes do 403 de dono. Token ausente → 400.
-      - Data inexistente → 400; passado = data + hora de início; consultas aceitam datas passadas.
+      - Data inexistente → 400 (regex de data mais estrita: mês 01–12, dia 01–31); passado = data + hora de início;
+        consultas aceitam datas passadas.
       - `delete_room` apaga as reservas encerradas da sala; admin inicial com conta em conflito não é criado nem promovido;
         maiúsculas em `user`/`email` → 400.
     - **2.8.0** (horários das salas no código da UTFPR)
@@ -262,10 +303,11 @@ info:
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   x-novidades:
-    versao: 2.9.0
+    versao: 2.9.1
     data: 05/11/2026
-    titulo: Ajustes no protocolo (versões 2.1 a 2.9)
+    titulo: Ajustes no protocolo (versões 2.1 a 2.9.1)
     itens:
+      - '**Revisão do contrato (2.9.1):** o limite de 8192 bytes vale só para requisições (respostas de listagem podem passar disso; o cliente lê até o `\n`). Filtro opcional não preenchido é omitido (`""` → 400). Mudar senha, user ou role não encerra sessão. `update_reservation` com `room_id`/`date` → 400. A ordem de validação ficou completa (seção 4). Nenhuma resposta nova.'
       - '**Dúvidas de implementação (2.9):** no `update_room`, `resources: []` mantém a lista e `["0"]` apaga todos os recursos; `capacity` abaixo dos participantes de uma reserva ativa → 409 "Capacidade menor que participantes de reservas ativas"; `update_room` e `update_reservation` sem nada para mudar → 400 "Nenhum dado para atualizar"; mudar o horário de uma reserva em sala `inactive` → 409 "Sala indisponivel para reserva". A ordem de validação ficou obrigatória (404 antes do 403 de dono; token ausente = 400). Data inexistente → 400 e passado = data + hora de início. Detalhes nas seções 4 e 9.'
       - '**Horários das salas no padrão da UTFPR (2.7 e 2.8, Entrega 2 itens d/e/f):** a sala tem `slots`, os horários em que funciona, no código da UTFPR: dia + turno + aula. `2M1` = segunda, manhã, primeiro horário; `4T3` = quarta, tarde, terceiro horário. Reservas usam início e fim de aula (ex.: `13:00`–`14:40` = T1 + T2). Fora do funcionamento → 409 "Horario fora do funcionamento da sala". `read_room` com `date` mostra a agenda do dia com quem reservou. Na 2.8 o campo `days` saiu: o dia já vem no código.'
       - '**Admin inicial (2.6):** todo servidor cria, quando não há nenhum admin, a conta `admin` com email `admin@admin.com` e senha `admin`. É a mesma em todos os grupos, e o testador já entra com ela.'
@@ -277,7 +319,7 @@ info:
       - '**Ordem no login (2.2):** formato (400) → senha (401) → sessão ativa (409). O 409 só aparece com a senha certa, para não revelar quais contas existem.'
       - '**E-mail (2.1):** aceita `.com.br`, `.edu.br` e domínios com vários níveis, como `alunos.utfpr.edu.br`, além de hífen no domínio e `_` antes do @.'
       - '**Senha errada no `delete_user` (2.1):** responde **403 "Senha incorreta"** e a sessão continua. Antes era 401, que fazia o cliente sair sem o servidor encerrar o token, e o login seguinte ficava bloqueado (409) por até 30 min.'
-      - '**Testador automático (novo):** `node scripts/testar-servidor.mjs IP PORTA` roda mais de 80 testes contra o servidor de vocês e aponta o que está fora do contrato. Veja o README.'
+      - '**Testador automático:** `node scripts/testar-servidor.mjs IP PORTA` roda mais de 100 testes contra o servidor de vocês e aponta o que está fora do contrato. Veja o README.'
     o_que_mudar:
       - '**Cliente e servidor:** trocar a regex de e-mail.'
       - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas; responder 400 "Nenhum dado para atualizar" quando a alteração de usuário vier toda vazia; manter a whitelist de tokens de admin e liberar as operações de admin só por ela; criar o admin inicial (`admin@admin.com` / `admin`) quando não houver nenhum admin; guardar os `slots` das salas no código da UTFPR (`2M1`), validar reservas pela tabela de aulas e montar a agenda do `read_room`; seguir a ordem de validação da seção 4 e as regras da seção 9 (resources, capacidade, sala inactive, datas, nada para atualizar).'
@@ -307,7 +349,7 @@ servers:
     description: |
       IP e porta são digitados nas telas: o servidor informa a porta de escuta e o cliente
       informa o IP e a porta do servidor. Cada mensagem é um JSON UTF-8 em linha única terminado
-      por `\n`, com no máximo 8192 bytes. Não existe binding oficial de TCP no AsyncAPI, então os
+      por `\n`; requisições têm no máximo 8192 bytes e respostas não têm limite (regra 1.6). Não existe binding oficial de TCP no AsyncAPI, então os
       parâmetros de transporte ficam na extensão `x-transporte`.
     variables:
       ip:
@@ -319,7 +361,7 @@ servers:
     x-transporte:
       codificacao: UTF-8
       delimitador: LF
-      tamanho_maximo_bytes: 8192
+      tamanho_maximo_requisicao_bytes: 8192
       timeout_inatividade_s: 300
       validade_token_min: 30
       modelo: requisicao-resposta
@@ -483,6 +525,10 @@ operations:
         e o login seguinte respondia 409 por até 30 min.
       - Com a senha certa, o servidor apaga o cadastro, invalida o token e apaga todas as reservas do usuário,
         passadas e futuras (v2.3, regra 3.13). O `user` e o `email` ficam livres para um novo `register`.
+      - Último admin → 403 "Nao e possivel remover o ultimo administrador". Com senha errada e último admin ao mesmo
+        tempo, vale "Senha incorreta" (seção 4).
+      - Token ausente ou fora do formato → 400 "Token em formato invalido"; senha fora do formato → 400 "Senha em formato
+        invalido" (regra 4.2).
       - Remoção de outro usuário: `admin_delete_user`.
     tags: [{$ref: '#/components/tags/usuario'}]
     messages: [{$ref: '#/channels/conexao/messages/delete_user'}]
@@ -581,7 +627,8 @@ operations:
     description: |
       - Liberado para qualquer usuário logado. Os quatro filtros são **opcionais**.
       - Sem `date`/`start_time`/`end_time`: lista todas as salas e omite `available`.
-      - Com o trio completo, cada sala vem com `available`. Enviar só parte do trio → 400. Data passada é aceita (regra 9.4).
+      - Com o trio completo, cada sala vem com `available`. Enviar só parte do trio, ou `end_time` ≤ `start_time` → 400
+        (regra 9.11). Data passada é aceita (regra 9.4). Filtro não usado é omitido; `""` → 400 (regra 2.14).
       - Lista vazia → 200 com `"count": "0"`.
     tags: [{$ref: '#/components/tags/salas'}]
     messages: [{$ref: '#/channels/conexao/messages/list_rooms'}]
@@ -615,7 +662,8 @@ operations:
     description: |
       - `""` (e `[]` nas listas) = não alterar; `null` → 400. `room_id` nunca muda. Tudo vazio → 400 "Nenhum dado para
         atualizar" (regra 2.13).
-      - `resources`: `[]` = não alterar; uma lista nova substitui a antiga; `["0"]` apaga todos os recursos (regra 9.7).
+      - `resources`: ausente ou `[]` = não alterar; uma lista nova substitui a antiga; `["0"]` apaga todos (regra 9.7).
+      - Nome já cadastrado e capacidade abaixo de reserva ativa ao mesmo tempo → vale "Sala ja cadastrada" (seção 4).
       - `slots` ausente ou `[]` = não alterar; uma lista nova substitui a antiga inteira. Mudar o funcionamento não
         apaga reservas já feitas (regra 8.7).
       - `capacity` menor que os `participants` de uma reserva ativa → 409 "Capacidade menor que participantes de reservas ativas" (regra 9.6).
@@ -652,7 +700,7 @@ operations:
       - **Não** reserva e não garante nada (regra 5.2).
       - Sala ocupada → 200 com `"available": "false"` (não é erro). Sala `inactive` → `"available": "false"`.
       - Dia ou horário fora do funcionamento da sala → `"available": "false"` (regra 8.4).
-      - Data passada é aceita (regra 9.4).
+      - Data passada é aceita (regra 9.4); `end_time` ≤ `start_time` → 400 (regra 9.11).
     tags: [{$ref: '#/components/tags/reservas'}]
     messages: [{$ref: '#/channels/conexao/messages/check_availability'}]
     reply:
@@ -687,7 +735,8 @@ operations:
     summary: Lista as minhas reservas ou todas (admin).
     description: |
       - `scope` aceita "mine" (padrão, se ausente) e "all". "all" só para admin; usuário comum → 403.
-      - `date` e `room_id` são filtros opcionais; `date` pode ser passada (regra 9.4). Lista vazia → 200 com `"count": "0"`.
+      - `date` e `room_id` são filtros opcionais; `date` pode ser passada (regra 9.4). Filtro não usado é omitido
+        (regra 2.14). Lista vazia, inclusive com `room_id` de sala inexistente → 200 com `"count": "0"` (regra 9.12).
     tags: [{$ref: '#/components/tags/reservas'}]
     messages: [{$ref: '#/channels/conexao/messages/list_reservations'}]
     reply:
@@ -718,7 +767,8 @@ operations:
     description: |
       - `""` é ignorado; `null` → 400. Tudo vazio → 400 "Nenhum dado para atualizar" (regra 2.13).
       - Só o dono altera: reserva de terceiro → 403, inclusive para o admin (regra 9.9). Reserva inexistente → 404, antes do 403.
-      - `room_id` e `date` não mudam: para trocar de sala ou de dia, cancela-se e cria-se outra reserva.
+      - `room_id` e `date` não mudam: enviar uma dessas chaves → 400 (regra 9.10). Para trocar de sala ou de dia,
+        cancela-se e cria-se outra reserva.
       - Estender o horário passa pelo mesmo lock de `create_reservation`. Novo `start_time` no passado → 400 (regra 9.3).
       - Reserva já encerrada → 409 "Reserva ja encerrada".
       - Mudar `start_time` ou `end_time` com a sala `inactive` → 409 "Sala indisponivel para reserva" (regra 9.5).
@@ -753,8 +803,8 @@ operations:
     x-acesso: publico
     summary: Qualquer linha fora do protocolo recebe `error` com status 400.
     description: |
-      - JSON inválido → "Requisicao invalida".
-      - `op` desconhecida → "Operacao desconhecida".
+      - JSON inválido, JSON que não é objeto, objeto sem `op` ou `op` que não é string → "Requisicao invalida" (regra 4.1).
+      - `op` desconhecida, inclusive uma `op` de resposta → "Operacao desconhecida".
       - Mais de 8192 bytes (incluindo o `\n`) → "Mensagem excede o tamanho maximo".
       - Como a `op` original não pôde ser determinada, a resposta usa `"op": "error"` em vez de `<op>_response`.
     tags: [{$ref: '#/components/tags/protocolo'}]
@@ -1062,6 +1112,7 @@ components:
               status: {const: '200'}
               message: {const: Usuario removido com sucesso}
           - $ref: '#/components/schemas/E400_senha'
+          - $ref: '#/components/schemas/E400_token'
           - $ref: '#/components/schemas/E401_token'
           - $ref: '#/components/schemas/E403_senha_incorreta'
           - $ref: '#/components/schemas/E403_ultimo_admin'
@@ -1071,6 +1122,8 @@ components:
           payload: {"op": "delete_user_response", "status": "200", "message": "Usuario removido com sucesso"}
         - name: '400'
           payload: {"op": "delete_user_response", "status": "400", "message": "Senha em formato invalido"}
+        - name: 400 token
+          payload: {"op": "delete_user_response", "status": "400", "message": "Token em formato invalido"}
         - name: '401'
           payload: {"op": "delete_user_response", "status": "401", "message": "Token invalido ou expirado"}
         - name: 403 senha incorreta
@@ -1492,8 +1545,8 @@ components:
       summary: 'C → S · altera uma sala (admin)'
       payload:
         type: object
-        description: 'Campo "" (ou [] nas listas) = não alterar, mas pelo menos um precisa mudar (regra 2.13). `resources`: [] mantém, lista nova substitui, ["0"] apaga todos.'
-        required: [op, token, room_id, name, capacity, location, resources, room_status]
+        description: 'Campo "" (ou [] nas listas) = não alterar, mas pelo menos um precisa vir preenchido (regra 2.13). `resources`: ausente ou [] mantém, lista nova substitui, ["0"] apaga todos.'
+        required: [op, token, room_id, name, capacity, location, room_status]
         properties:
           op: {type: string, const: update_room}
           token: {$ref: '#/components/schemas/token'}
@@ -1514,7 +1567,7 @@ components:
               - $ref: '#/components/schemas/location'
               - $ref: '#/components/schemas/nao_alterar'
           resources:
-            description: Nova lista completa de recursos; [] para manter; ["0"] para apagar todos (regra 9.7).
+            description: Nova lista completa de recursos; ausente ou [] para manter; ["0"] para apagar todos (regra 9.7).
             anyOf:
               - $ref: '#/components/schemas/resources'
               - $ref: '#/components/schemas/lista_vazia'
@@ -1533,7 +1586,7 @@ components:
           - not:
               description: 'Todos os campos vazios ("" e []): não há nada para atualizar (regra 2.13).'
               x-message: Nenhum dado para atualizar
-              required: [name, capacity, location, resources, room_status]
+              required: [name, capacity, location, room_status]
               properties:
                 name: {const: ''}
                 capacity: {const: ''}
@@ -1870,7 +1923,7 @@ components:
       summary: 'C → S · altera uma reserva'
       payload:
         type: object
-        description: 'Campo "" = não alterar, mas pelo menos um precisa mudar (regra 2.13). room_id e date não podem ser alterados.'
+        description: 'Campo "" = não alterar, mas pelo menos um precisa vir preenchido (regra 2.13). As chaves room_id e date são proibidas (400, regra 9.10).'
         required: [op, token, reservation_id, start_time, end_time, topic, participants]
         properties:
           op: {type: string, const: update_reservation}
@@ -1897,6 +1950,12 @@ components:
               - $ref: '#/components/schemas/participants'
               - $ref: '#/components/schemas/nao_alterar'
         allOf:
+          - not:
+              description: 'A chave `date` não pode ser enviada: o dia da reserva não muda (regra 9.10).'
+              required: [date]
+          - not:
+              description: 'A chave `room_id` não pode ser enviada: a sala da reserva não muda (regra 9.10).'
+              required: [room_id]
           - not:
               description: '`start_time`, `end_time`, `topic` e `participants` vazios: não há nada para atualizar (regra 2.13).'
               x-message: Nenhum dado para atualizar
@@ -2011,7 +2070,7 @@ components:
       contentType: text/plain
       payload:
         type: string
-        description: JSON malformado, `op` desconhecida ou linha com mais de 8192 bytes (incluindo o `\n`).
+        description: JSON malformado, JSON que não é objeto, objeto sem `op`, `op` desconhecida ou linha com mais de 8192 bytes (incluindo o `\n`). Regra 4.1.
       examples:
         - name: JSON malformado
           payload: '{"op": "login", "email": '
@@ -2075,7 +2134,8 @@ components:
     email:
       type: string
       pattern: '^[a-z0-9._-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$'
-      description: 'Único no sistema. Aceita domínios com vários níveis e hífen (.com.br, .edu.br, alunos.utfpr.edu.br) e "_" ou "-" antes do @ (v2.1). Definido no register e não pode ser alterado depois (RNF 5.c).'
+      maxLength: 100
+      description: 'Até 100 caracteres (v2.9.1). Único no sistema. Aceita domínios com vários níveis e hífen (.com.br, .edu.br, alunos.utfpr.edu.br) e "_" ou "-" antes do @ (v2.1). Definido no register e não pode ser alterado depois (RNF 5.c).'
       examples: [joao.silva@email.com, maria.souza@alunos.utfpr.edu.br]
     role:
       type: string
@@ -2182,7 +2242,7 @@ components:
       type: array
       items: {type: string}
       maxItems: 0
-      description: Em update_room, [] em resources ou slots mantém o valor atual (regra 2.11).
+      description: Em update_room, [] (ou a chave ausente) em resources ou slots mantém o valor atual (regra 2.11).
     apagar_lista:
       title: '["0"] (apagar todos)'
       type: array

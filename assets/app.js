@@ -1,8 +1,8 @@
 // Documentação do protocolo no estilo do Swagger UI, montada no navegador a partir do asyncapi.yaml.
 import { load, CORE_SCHEMA } from './vendor/js-yaml.js';
 import { Marked } from './vendor/marked.js';
-import { validate } from './validator.js';
-import { deref, variantsOf, oneLine } from './contract.js';
+import { validate } from './validator.js?v=2.9.1';
+import { deref, variantsOf, oneLine, expected400 } from './contract.js?v=2.9.1';
 
 const SPEC_URL = 'asyncapi.yaml';
 const LIMIT = 8192;
@@ -211,7 +211,7 @@ function serversHtml(spec) {
   const srv = Object.values(spec.servers || {})[0] || {};
   const xt = srv['x-transporte'] || {};
   const label = {
-    codificacao: (v) => v, delimitador: (v) => `delimitador ${v}`, tamanho_maximo_bytes: (v) => `até ${v} bytes`,
+    codificacao: (v) => v, delimitador: (v) => `delimitador ${v}`, tamanho_maximo_requisicao_bytes: (v) => `requisição até ${v} bytes`,
     timeout_inatividade_s: (v) => `inatividade ${v} s`, validade_token_min: (v) => `token vale ${v} min`, modelo: (v) => v,
   };
   const ip = local.get('ip', srv.variables?.ip?.examples?.[0] || '127.0.0.1');
@@ -402,7 +402,8 @@ function checkRequest(o, text) {
   try { data = JSON.parse(t); } catch (e) {
     return [...items, { level: 'err', msg: `JSON inválido (${e.message}). O servidor responde {"op": "error", "status": "400", "message": "Requisicao invalida"}.` }];
   }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return [...items, { level: 'err', msg: 'A mensagem deve ser um objeto JSON.' }];
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return [...items, { level: 'err', msg: 'A mensagem deve ser um objeto JSON. O servidor responde {"op": "error", "status": "400", "message": "Requisicao invalida"} (regra 4.1).' }];
+  if (typeof data.op !== 'string') return [...items, { level: 'err', msg: 'Falta a chave "op" (ou ela não é string). O servidor responde {"op": "error", "status": "400", "message": "Requisicao invalida"} (regra 4.1).' }];
   const b = bytesOf(`${oneLine(data)}\n`);
   if (b > LIMIT) items.push({ level: 'err', msg: `${b} bytes com o \\n; o limite é ${LIMIT}. O servidor responde "Mensagem excede o tamanho maximo".` });
   let target = o;
@@ -420,9 +421,8 @@ function checkRequest(o, text) {
   const errs = validate(target.req.payload, data);
   errs.forEach((e) => items.push({ level: 'err', msg: e.msg }));
   if (errs.length) {
-    const especifica = errs.find((e) => e.expect)?.expect;
-    const v400 = variantsOf(target.res).find((v) => v.status === '400');
-    if (especifica || v400) items.push({ level: 'info', msg: `Resposta esperada do servidor: 400 · ${especifica || v400.message}` });
+    const esperada = expected400(target, errs);
+    if (esperada) items.push({ level: 'info', msg: `Resposta esperada do servidor: 400 · ${esperada}` });
   } else if (!items.some((i) => i.level === 'err')) {
     items.unshift({ level: 'ok', msg: `Requisição válida para ${target.id} (${b} bytes).` });
   }
