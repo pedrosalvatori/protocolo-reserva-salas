@@ -111,9 +111,11 @@ function fieldInfo(s, example) {
   const el = main.type === 'array' && main.items ? main.items : main; // nas listas, os valores vêm dos itens
   const meta = [];
   if (has(main, 'const')) meta.push(['valor', `<code>${esc(JSON.stringify(main.const))}</code>`]);
+  const dias = el['x-dias'];
   const hor = el['x-horarios'];
-  if (hor) meta.push(['horários', Object.entries(hor).map(([c, [a, b]]) => `<code>${esc(c)}</code>&nbsp;${esc(a)}–${esc(b)}`).join(' · ')]);
-  else if (el.enum) meta.push(['valores', el.enum.map((v) => `<code>${esc(JSON.stringify(v))}</code>`).join(' ')]);
+  if (dias) meta.push(['dia', Object.entries(dias).map(([n, d]) => `<code>${esc(n)}</code>&nbsp;${esc(d)}`).join(' · ')]);
+  if (hor) meta.push([dias ? 'turno e aula' : 'horários', Object.entries(hor).map(([c, [a, b]]) => `<code>${esc(c)}</code>&nbsp;${esc(a)}–${esc(b)}`).join(' · ')]);
+  if (!hor && el.enum) meta.push(['valores', el.enum.map((v) => `<code>${esc(JSON.stringify(v))}</code>`).join(' ')]);
   if (el.pattern) meta.push(['formato', `<code class="pattern">${esc(el.pattern)}</code>`]);
   if (main.type === 'array' && (main.minItems || main.uniqueItems)) {
     meta.push(['lista', [main.minItems ? `pelo menos ${main.minItems} item` : '', main.uniqueItems ? 'sem repetir' : ''].filter(Boolean).join(', ')]);
