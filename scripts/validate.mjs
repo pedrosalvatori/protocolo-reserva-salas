@@ -33,8 +33,14 @@ function* variations(payload) {
       yield { ...payload, [key]: [] };
       if (payload[key].length) yield { ...payload, [key]: [...payload[key], payload[key][0]] };
       yield { ...payload, [key]: [...payload[key], 'xyz'] };
+      // v2.9: ["0"] apaga recursos no update_room; "0" no meio de uma lista é inválido
+      yield { ...payload, [key]: ['0'] };
+      yield { ...payload, [key]: [...payload[key], '0'] };
     }
   }
+  // v2.9: datas fora do calendário
+  if ('date' in payload) yield { ...payload, date: '2026-13-01' };
+  if ('date' in payload) yield { ...payload, date: '2026-02-32' };
   // horários fora da tabela da UTFPR (v2.7)
   if ('start_time' in payload) yield { ...payload, start_time: '14:00' };
   if ('end_time' in payload) yield { ...payload, end_time: '16:00' };

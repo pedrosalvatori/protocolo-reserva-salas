@@ -103,9 +103,11 @@ const codeBlock = (line, label = '') => `<div class="highlight-code">${label ? `
 function fieldInfo(s, example) {
   let main = s, keep = '';
   if (Array.isArray(s.anyOf)) {
-    main = s.anyOf.find((x) => x.const !== '' && x.maxItems !== 0) || s.anyOf[0];
+    main = s.anyOf.find((x) => x.const !== '' && x.maxItems !== 0 && x.items?.const === undefined) || s.anyOf[0];
     if (s.anyOf.some((x) => x.const === '')) keep = '<code>""</code> = não alterar';
     else if (s.anyOf.some((x) => x.maxItems === 0)) keep = '<code>[]</code> = não alterar';
+    const apagar = s.anyOf.find((x) => x.type === 'array' && x.items?.const !== undefined);
+    if (apagar) keep += ` · <code>${esc(JSON.stringify([apagar.items.const]))}</code> = apagar todos`;
   }
   const type = main.type === 'array' ? `array[${main.items?.type || 'object'}]` : (main.type || 'string');
   const el = main.type === 'array' && main.items ? main.items : main; // nas listas, os valores vêm dos itens

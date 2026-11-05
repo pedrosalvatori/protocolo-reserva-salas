@@ -188,6 +188,12 @@ function dia(desloc) {
   const p = (x) => String(x).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+// Data e hora de agora em America/Sao_Paulo, o fuso do servidor (regra 9.3)
+function agoraSP() {
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const p = Object.fromEntries(fmt.formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return { data: `${p.year}-${p.month}-${p.day}`, hora: `${p.hour}:${p.minute}` };
+}
 // v2.8: horários no código da UTFPR, dia + turno + aula (2M1 = segunda, manhã, primeiro horário)
 const NOME_DIA = { 1: 'domingo', 2: 'segunda', 3: 'terça', 4: 'quarta', 5: 'quinta', 6: 'sexta', 7: 'sábado' };
 const numDia = (data) => new Date(`${data}T12:00:00`).getDay() + 1; // 1 = domingo, 2 = segunda ... 7 = sábado
@@ -294,8 +300,8 @@ async function bateria(admin) {
       (await chamar(cX, { op: 'read_user', token: 'abc' }, { status: '400', message: 'Token em formato invalido' })).problemas);
     await teste('token que não existe → 401', async () =>
       (await chamar(cX, { op: 'read_user', token: crypto.randomBytes(32).toString('hex') }, { status: '401', message: 'Token invalido ou expirado' })).problemas);
-    await teste('requisição sem token → 400 ou 401 (pendência 1)', async () =>
-      (await chamar(cX, { op: 'read_user' }, { status: ['400', '401'] })).problemas);
+    await teste('requisição sem token → 400 (regras 2.10 e 3.9)', async () =>
+      (await chamar(cX, { op: 'read_user' }, { status: '400' })).problemas);
 
     grupo('Próprio cadastro');
     await teste('read_user → 200 com os próprios dados e sem senha', async () => {
@@ -433,6 +439,8 @@ async function bateria(admin) {
         precisa(sala.criada, 'a sala de teste não foi criada');
         return (await chamar(cAdm, { op: 'create_room', token: ADM.token, name: `Sala Teste ${sufixo}`, capacity: '10', location: 'Bloco T - teste', resources: [], slots: ['2M1'] }, { status: '409', message: 'Sala ja cadastrada' })).problemas;
       });
+      await teste('create_room com recurso "0" → 400 (regra 9.7)', async () =>
+        (await chamar(cAdm, { op: 'create_room', token: ADM.token, name: `Sala Recurso Zero ${sufixo}`, capacity: '10', location: 'Bloco T', resources: ['0'], slots: ['2M1'] }, { status: '400', message: 'Dados da sala em formato invalido' })).problemas);
       await teste('usuário comum em create_room → 403', async () => {
         precisa(A.token, 'o login falhou');
         return (await chamar(cA, { op: 'create_room', token: A.token, name: `Sala Outra ${sufixo}`, capacity: '10', location: 'Bloco T', resources: [], slots: ['2M1'] }, { status: '403', message: 'Permissao insuficiente' })).problemas;
@@ -483,18 +491,28 @@ async function bateria(admin) {
       return problemas;
     });
     if (sala.criada) {
-      await teste('update_room mudando a capacidade, com slots [] → 200', async () => {
-        const r = await chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: '12', location: '', resources: ['projetor'], room_status: '', slots: [] }, { status: '200', message: 'Sala atualizada com sucesso' });
+      await teste('update_room mudando só a capacidade, com resources e slots [] → 200', async () => {
+        const r = await chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: '12', location: '', resources: [], room_status: '', slots: [] }, { status: '200', message: 'Sala atualizada com sucesso' });
         if (r.data?.status === '200') sala.capacidade = 12;
         return r.problemas;
       });
-      await teste('depois do update_room, [] manteve os slots (regra 8.7)', async () => {
+      await teste('depois do update_room, [] manteve resources e slots (regras 2.11, 8.7 e 9.7)', async () => {
         const { data, problemas } = await chamar(cAdm, { op: 'read_room', token: ADM.token, room_id: sala.id }, { status: '200' });
         if (data?.status === '200') {
           if (data.capacity !== '12') problemas.push(falha(`capacity ${JSON.stringify(data.capacity)}; esperado "12"`));
+          if (JSON.stringify(data.resources) !== '["projetor"]') problemas.push(falha(`resources mudou para ${JSON.stringify(data.resources)}; [] é "não alterar" (a sala foi criada com ["projetor"])`));
           if (!mesmoConjunto(data.slots, SALA_SLOTS)) problemas.push(falha(`slots mudou para ${JSON.stringify(data.slots)}; [] é "não alterar"`));
         }
         return problemas;
+      });
+      await teste('update_room sem nada para mudar → 400 "Nenhum dado para atualizar" (regra 2.13)', async () =>
+        (await chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: '', location: '', resources: [], room_status: '' }, { status: '400', message: 'Nenhum dado para atualizar' })).problemas);
+      await teste('update_room com resources ["0"] apaga os recursos (regra 9.7)', async () => {
+        const r = await chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: '', location: '', resources: ['0'], room_status: '' }, { status: '200', message: 'Sala atualizada com sucesso' });
+        if (r.data?.status !== '200') return r.problemas;
+        const { data, problemas } = await chamar(cAdm, { op: 'read_room', token: ADM.token, room_id: sala.id }, { status: '200' });
+        if (data?.status === '200' && JSON.stringify(data.resources) !== '[]') problemas.push(falha(`resources ${JSON.stringify(data.resources)}; ["0"] apaga todos os recursos`));
+        return [...r.problemas, ...problemas];
       });
     }
 
@@ -567,6 +585,27 @@ async function bateria(admin) {
       guardar(r.data, A);
       return r.problemas;
     });
+    await teste('data inexistente no calendário (30 de fevereiro) → 400 (regra 9.2)', async () => {
+      precisa(sala.id && A.token, 'não há sala para testar');
+      const r = await chamar(cA, reserva(A.token, '13:00', '13:50', { date: `${Number(data1.slice(0, 4)) + 1}-02-30`, participants: '2' }), { status: '400', message: 'Dados da reserva em formato invalido' });
+      guardar(r.data, A);
+      return r.problemas;
+    });
+    await teste('hoje, numa aula que já começou → 400 (regra 9.3)', async () => {
+      precisa(sala.id && A.token, 'não há sala para testar');
+      const { data: hojeSP, hora } = agoraSP();
+      if (hora < '08:30') throw new Pulo('antes das 08:30 (horário de São Paulo); rode mais tarde');
+      const r = await chamar(cA, reserva(A.token, '07:30', '08:20', { date: hojeSP, participants: '2' }), { status: '400', message: 'Dados da reserva em formato invalido' });
+      // se o servidor aceitou, não dá para cancelar depois: a reserva já começou (e logo estará encerrada)
+      return r.problemas;
+    });
+    await teste('consultas com data passada → 200 (regra 9.4)', async () => {
+      precisa(sala.id && A.token, 'não há sala para testar');
+      const passada = dia(-7);
+      const c = await chamar(cA, { op: 'check_availability', token: A.token, room_id: sala.id, date: passada, start_time: '13:00', end_time: '13:50' }, { status: '200' });
+      const r = await chamar(cA, { op: 'read_room', token: A.token, room_id: sala.id, date: passada }, { status: '200' });
+      return [...c.problemas, ...r.problemas];
+    });
     await teste('horário fora da tabela da UTFPR (14:00–16:00) → 400 (regra 8.3)', async () => {
       precisa(sala.id && A.token, 'não há sala para testar');
       const r = await chamar(cA, reserva(A.token, '14:00', '16:00'), { status: '400', message: 'Dados da reserva em formato invalido' });
@@ -599,6 +638,15 @@ async function bateria(admin) {
       guardar(r.data, A);
       return r.problemas;
     });
+    if (sala.criada) {
+      await teste('update_room com capacity abaixo dos participants de uma reserva ativa → 409 (regra 9.6)', async () => {
+        precisa(sala.reservaA, 'a reserva não foi criada');
+        const r = await chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: '3', location: '', resources: [], room_status: '' }, { status: '409', message: 'Capacidade menor que participantes de reservas ativas' });
+        // se o servidor aceitou, devolve a capacidade para não atrapalhar os próximos testes
+        if (r.data?.status === '200') await chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: String(sala.capacidade), location: '', resources: [], room_status: '' });
+        return r.problemas;
+      });
+    }
     await teste('list_reservations (minhas) → 200 com a reserva', async () => {
       precisa(sala.reservaA, 'a reserva não foi criada');
       const { data, problemas } = await chamar(cA, { op: 'list_reservations', token: A.token, scope: 'mine' }, { status: '200' });
@@ -640,8 +688,33 @@ async function bateria(admin) {
       precisa(sala.reservaA, 'a reserva não foi criada');
       return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '13:50', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' })).problemas;
     });
+    await teste('update_reservation sem nada para mudar → 400 "Nenhum dado para atualizar" (regra 2.13)', async () => {
+      precisa(sala.reservaA, 'a reserva não foi criada');
+      return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '', topic: '', participants: '' }, { status: '400', message: 'Nenhum dado para atualizar' })).problemas;
+    });
+    if (ADM?.token) {
+      await teste('admin alterando reserva de outro usuário → 403 (regra 9.9)', async () => {
+        precisa(sala.reservaA, 'a reserva não foi criada');
+        return (await chamar(cAdm, { op: 'update_reservation', token: ADM.token, reservation_id: sala.reservaA, start_time: '', end_time: '', topic: 'Mudado pelo admin', participants: '' }, { status: '403', message: 'Permissao insuficiente' })).problemas;
+      });
+    }
     if (sala.criada) {
-      await teste('delete_room com reservas futuras → 409', async () => {
+      await teste('sala inactive: mudar o horário da reserva → 409, mudar só o topic → 200 (regra 9.5)', async () => {
+        precisa(sala.reservaA, 'a reserva não foi criada');
+        const estado = (room_status) => chamar(cAdm, { op: 'update_room', token: ADM.token, room_id: sala.id, name: '', capacity: '', location: '', resources: [], room_status }, { status: '200', message: 'Sala atualizada com sucesso' });
+        const off = await estado('inactive');
+        if (off.data?.status !== '200') return off.problemas;
+        try {
+          const h = await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '14:40', topic: '', participants: '' }, { status: '409', message: 'Sala indisponivel para reserva' });
+          const t = await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '', topic: 'Topico novo', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' });
+          return [...off.problemas, ...h.problemas, ...t.problemas];
+        } finally {
+          await estado('active');
+        }
+      });
+    }
+    if (sala.criada) {
+      await teste('delete_room com reservas ativas → 409 (regra 9.8)', async () => {
         precisa(sala.reservaA, 'a reserva não foi criada');
         return (await chamar(cAdm, { op: 'delete_room', token: ADM.token, room_id: sala.id }, { status: '409', message: 'Sala possui reservas ativas' })).problemas;
       });

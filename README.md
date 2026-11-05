@@ -51,7 +51,7 @@ node scripts/testar-servidor.mjs 127.0.0.1 5000
 Se o grupo trocou a senha do admin, passe a conta com `--admin email:senha`. Para pular os testes de admin, use
 `--admin -`.
 
-Ele roda mais de 80 testes e confere cada resposta contra o `asyncapi.yaml`, inclusive o texto exato da
+Ele roda mais de 90 testes e confere cada resposta contra o `asyncapi.yaml`, inclusive o texto exato da
 `message`. Os testes cobrem:
 
 - formato e erros de protocolo;
@@ -87,9 +87,9 @@ contrato, reaproveitando o token do último login.
 
 O AsyncAPI descreve cada mensagem, mas não a ordem entre elas. Estes três diagramas cobrem isso.
 
-### Ordem sugerida de validação no servidor
+### Ordem de validação no servidor
 
-A planilha não fixa a precedência entre 400, 401, 403, 404 e 409 (pendência 6).
+Obrigatória desde a v2.9 (seção 4 do contrato). O primeiro passo que falhar define a resposta.
 
 ```mermaid
 flowchart TD
@@ -99,18 +99,22 @@ flowchart TD
   C -- não --> E2["error · 400<br/>Requisicao invalida"]
   C -- sim --> D{"op conhecida?"}
   D -- não --> E3["error · 400<br/>Operacao desconhecida"]
-  D -- sim --> F{"campos obrigatórios presentes,<br/>strings e aprovados na regex?"}
-  F -- não --> R400["400 · mensagem da operação"]
+  D -- sim --> F{"campos presentes (inclusive o token),<br/>strings, regex, data existente,<br/>algo para atualizar?"}
+  F -- não --> R400["400 · mensagem da operação<br/>ou Nenhum dado para atualizar"]
   F -- sim --> G{"register ou login?"}
   G -- sim --> L
   G -- não --> H{"token ativo?"}
   H -- não --> R401["401 · Token invalido ou expirado"]
   H -- sim --> I["renova a validade: 30 min"]
-  I --> J{"tem permissão?<br/>admin_*, criar/alterar/remover sala,<br/>scope all, reserva de terceiro"}
+  I --> J{"op de admin ou scope all:<br/>token na whitelist?"}
   J -- não --> R403["403 · Permissao insuficiente"]
-  J -- sim --> K{"recurso existe?"}
+  J -- sim --> K{"usuário, sala ou reserva existe?"}
   K -- não --> R404["404 · Usuario / Sala / Reserva nao encontrada"]
-  K -- sim --> L{"conflito com o estado atual?<br/>reservas: dentro do lock por room_id"}
+  K -- sim --> M{"dono da reserva?<br/>último admin? senha certa?"}
+  M -- não --> R403b["403 · da operação"]
+  M -- sim --> N{"participants cabe na sala?<br/>horário novo válido?"}
+  N -- não --> R400b["400 · Dados da reserva em formato invalido"]
+  N -- sim --> L{"conflito com o estado atual?<br/>reservas: dentro do lock por room_id"}
   L -- sim --> R409["409 · conflito"]
   L -- não --> OK(["executa → 200 / 201"])
   OK -. falha inesperada .-> R500["500 · Erro interno do servidor"]
@@ -180,18 +184,57 @@ sequenceDiagram
 
 Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementações de grupos diferentes:
 
-1. **Token ausente:** a regra 2.10 manda responder 400 (campo obrigatório ausente), mas a aba *Códigos de Status* lista "token ausente" como 401.
+1. **Resolvida na v2.9.** Token ausente → 400, como qualquer campo obrigatório; 401 fica para token sem sessão ativa.
 2. **Resolvida na v2.1.** `delete_user` com senha incorreta respondia 401, o que fazia o cliente descartar um token que o servidor mantinha ativo. Agora responde 403 "Senha incorreta".
-3. **`update_room` reduzindo `capacity`** abaixo dos `participants` de uma reserva futura responde 409, sem `message` definida.
-4. **`scope` e `min_capacity`** aparecem nas mensagens, mas não no Dicionário. No contrato ficou `scope` ∈ {mine, all} e `min_capacity` no formato de `capacity`.
-5. **`resources` em atualização:** a regra 2.11 (`""` = não alterar) não cobre arrays. `[]` esvazia a lista ou mantém?
-6. **Precedência de erros** não definida. Um usuário comum que envia `create_room` inválido recebe 400 ou 403?
+3. **Resolvida na v2.9.** `update_room` com `capacity` abaixo dos `participants` de uma reserva ativa → 409 "Capacidade menor que participantes de reservas ativas".
+4. **Resolvida.** `scope` ∈ {mine, all} e `min_capacity` no formato de `capacity`, que não estavam no Dicionário, ficaram definidos no contrato.
+5. **Resolvida na v2.9.** `resources` no `update_room`: `[]` mantém, lista nova substitui, `["0"]` apaga todos.
+6. **Resolvida na v2.9.** A ordem de validação ficou obrigatória (diagrama acima).
 7. **Sessão presa:** se o cliente perder o token sem fazer logout (app fechado, travamento), um novo login responde 409 por até 30 min, e o logout exige o token perdido. A senha de confirmação errada (v2.1) e o logout depois de inatividade (v2.2) já não causam isso; o caso do app fechado continua em aberto.
-8. **Maiúsculas:** a regra 2.12 diz que `user` e `email` são gravados em minúsculas, mas as regex rejeitam maiúsculas. Converter ou responder 400?
-9. **Estados de sala:** uma nota na planilha cita "fechada para limpeza, ocupado", mas `room_status` só aceita `active` e `inactive`.
-10. **`update_reservation` pelo admin:** `read_reservation` e `delete_reservation` dizem que o admin age sobre qualquer reserva; `update_reservation` não diz. No contrato ficou só o dono.
+8. **Resolvida na v2.9.** Maiúsculas em `user` e `email` → 400; o servidor não converte.
+9. **Resolvida na v2.7.** `room_status`: `active` = livre para reservas, `inactive` = indisponível (manutenção, limpeza).
+10. **Resolvida na v2.9.** `update_reservation` é só do dono: o admin lê e cancela reservas de terceiros, mas não altera (403).
 
 ## Versões
+
+### 2.9.0 (dúvidas de implementação)
+
+Respostas às perguntas que os grupos mandaram enquanto implementavam a v2.8 (seções 4 e 9 do contrato).
+
+| # | Dúvida | Resposta |
+|---|---|---|
+| 1 | `update_room` reduzindo `capacity` abaixo dos `participants` de uma reserva futura | **409 "Capacidade menor que participantes de reservas ativas"**. Reserva ativa = ainda não terminou (data + `end_time` no futuro). |
+| 2 | `resources` no `update_room`: `[]` esvazia ou mantém? Itens têm regex? | `[]` **mantém**; lista nova substitui; **`["0"]` apaga todos**. Cada recurso segue `^[A-Za-z0-9 -]{1,30}$` e não pode ser `"0"`. |
+| 3 | `update_reservation` numa sala `inactive` | Mudar `start_time` ou `end_time` → **409 "Sala indisponivel para reserva"**. Mudar só `topic` ou `participants` continua permitido. |
+| 4 | 403 de dono antes ou depois do 404? | **404 antes do 403 de dono** (reserva inexistente é 404 para qualquer um). O 403 de admin (`scope: "all"`, op de admin) vem antes do 404. |
+| 5 | `participants > capacity` e a ordem | É 400 **depois** do 401, 403 de perfil, 404 e 403 de dono, e **antes** dos 409. |
+| 6 | Data que passa na regex mas não existe (`2026-02-30`) | **400** com a message de formato da operação. A regex também ficou mais estrita (mês 01–12, dia 01–31). |
+| 7 | "Data passada" compara só a data? | Compara **data + `start_time`**: hoje vale, mas só numa aula que ainda não começou. No `update_reservation`, um `start_time` novo no passado também é 400. |
+| 8 | Consultas com data passada | **Aceitas** (`read_room`, `list_rooms`, `check_availability`, `list_reservations`). Só criar e alterar reserva olham o passado. |
+| 9 | Admin inicial com conta `admin`/`admin@admin.com` já existente | O servidor cria o admin ao iniciar, antes de aceitar conexões. Se houver conflito (banco antigo), **não cria nem promove**: avisa no log e o grupo corrige o banco. |
+| 10 | `delete_room` e as reservas encerradas | Apagadas junto com a sala, como na remoção de conta. Reserva ativa continua bloqueando (409 "Sala possui reservas ativas"). |
+
+Também na 2.9.0:
+
+- **Nada para atualizar:** `update_room` (tudo `""`, `resources: []`, `slots` ausente ou `[]`) e `update_reservation`
+  (os quatro campos `""`) respondem **400 "Nenhum dado para atualizar"**, como o `update_user` desde a 2.4.
+- **Token ausente → 400** (era 400 ou 401). **Maiúsculas** em `user`/`email` → 400, sem converter.
+- **Só o dono altera a reserva**, inclusive para o admin (403).
+
+```json
+{"op": "update_room", "token": "...", "room_id": "1", "name": "", "capacity": "16", "location": "", "resources": [], "room_status": ""}
+{"op": "update_room", "token": "...", "room_id": "1", "name": "", "capacity": "", "location": "", "resources": ["0"], "room_status": ""}
+```
+
+A primeira muda só a capacidade e mantém os recursos; a segunda apaga todos os recursos.
+
+O que cada grupo precisa mudar:
+
+- **Servidor:** `resources` com `[]`/`["0"]` e regex dos itens; o 409 de capacidade; o 409 de sala `inactive` no
+  `update_reservation`; o 400 "Nenhum dado para atualizar" no `update_room` e no `update_reservation`; seguir a ordem
+  de validação; data inexistente → 400; passado = data + hora; apagar as reservas encerradas no `delete_room`.
+- **Cliente:** no `update_room`, mandar `resources: []` quando o recurso não mudou e `["0"]` para apagar todos;
+  tratar as respostas novas.
 
 ### 2.8.0 (horários das salas no código da UTFPR)
 
