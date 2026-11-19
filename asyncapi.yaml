@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.9.1
+  version: 2.9.2
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídos · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -40,7 +40,9 @@ info:
     - **2.5** Toda requisição envia `token`, exceto `register` e `login`.
     - **2.6 / 2.7** Toda resposta tem no mínimo `op`, `status` e `message`; `status` é o código numérico como string (`"200"`).
     - **2.8** `message` em português, sem acentos e sem emojis, **exatamente** como definido em cada operação.
-    - **2.9** Campos desconhecidos são ignorados (interoperabilidade entre grupos).
+    - **2.9** Campos **que este protocolo não define** são ignorados (interoperabilidade entre grupos). Campo que o
+      protocolo define, mas que aquela operação não aceita, **não** é ignorado: vale a regra da própria operação, que
+      responde 400 — `room_id` e `date` no `update_reservation` (regra 9.10) e `email` no `update_user`.
     - **2.10** Campo obrigatório ausente → 400. Qualquer campo enviado com `null` ou tipo errado (string; array nos campos
       de lista) → 400, inclusive os opcionais.
     - **2.11** `""` em atualização significa **não alterar**; em criação é inválido (400). Nas listas (`resources`,
@@ -246,6 +248,11 @@ info:
 
     ## 10. Histórico de versões
 
+    - **2.9.2** (correção de texto; nenhuma regra nova, nenhuma resposta nova)
+      - A regra 2.9 contradizia a 9.10. Dizia apenas "campos desconhecidos são ignorados", o que permitia ler que um
+        `room_id` ou `date` enviado no `update_reservation` devia ser ignorado (200) em vez de recusado (400). Agora a
+        2.9 vale só para campos que o protocolo não define, e campo definido que a operação não aceita segue a regra
+        dela. A 9.10 já era a regra que valia: nenhuma implementação precisa mudar.
     - **2.9.1** (revisão do contrato; nenhuma resposta nova, só regras explicitadas)
       - Limite de 8192 bytes só nas requisições; respostas sem limite (regra 1.6). Conexão aberta depois de erro (1.12).
       - Filtro opcional vazio → 400, e o cliente o omite (2.14); valor igual ao atual é alteração (2.15).
@@ -303,10 +310,11 @@ info:
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   x-novidades:
-    versao: 2.9.1
-    data: 05/11/2026
-    titulo: Ajustes no protocolo (versões 2.1 a 2.9.1)
+    versao: 2.9.2
+    data: 19/11/2026
+    titulo: Ajustes no protocolo (versões 2.1 a 2.9.2)
     itens:
+      - '**Correção de texto (2.9.2):** a regra 2.9 ("campos desconhecidos são ignorados") contradizia a 9.10 (`room_id`/`date` no `update_reservation` → 400): dava para ler que esses campos deviam ser ignorados. Agora está explícito que a 2.9 vale só para campos que o protocolo não define. Nenhuma regra nova, nenhuma resposta nova e nenhuma implementação precisa mudar.'
       - '**Revisão do contrato (2.9.1):** o limite de 8192 bytes vale só para requisições (respostas de listagem podem passar disso; o cliente lê até o `\n`). Filtro opcional não preenchido é omitido (`""` → 400). Mudar senha, user ou role não encerra sessão. `update_reservation` com `room_id`/`date` → 400. A ordem de validação ficou completa (seção 4). Nenhuma resposta nova.'
       - '**Dúvidas de implementação (2.9):** no `update_room`, `resources: []` mantém a lista e `["0"]` apaga todos os recursos; `capacity` abaixo dos participantes de uma reserva ativa → 409 "Capacidade menor que participantes de reservas ativas"; `update_room` e `update_reservation` sem nada para mudar → 400 "Nenhum dado para atualizar"; mudar o horário de uma reserva em sala `inactive` → 409 "Sala indisponivel para reserva". A ordem de validação ficou obrigatória (404 antes do 403 de dono; token ausente = 400). Data inexistente → 400 e passado = data + hora de início. Detalhes nas seções 4 e 9.'
       - '**Horários das salas no padrão da UTFPR (2.7 e 2.8, Entrega 2 itens d/e/f):** a sala tem `slots`, os horários em que funciona, no código da UTFPR: dia + turno + aula. `2M1` = segunda, manhã, primeiro horário; `4T3` = quarta, tarde, terceiro horário. Reservas usam início e fim de aula (ex.: `13:00`–`14:40` = T1 + T2). Fora do funcionamento → 409 "Horario fora do funcionamento da sala". `read_room` com `date` mostra a agenda do dia com quem reservou. Na 2.8 o campo `days` saiu: o dia já vem no código.'

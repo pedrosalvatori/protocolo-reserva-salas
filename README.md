@@ -204,6 +204,17 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 
 ## Versões
 
+### 2.9.2 (correção de texto)
+
+Nenhuma regra nova e nenhuma resposta nova: a 2.9 contradizia a 9.10 e ficou ambígua.
+
+- **Campos desconhecidos (regra 2.9):** dizia só "campos desconhecidos são ignorados", o que permitia ler que um
+  `room_id` ou `date` enviado no `update_reservation` devia ser **ignorado** (200) em vez de **recusado** (400) — o
+  contrário do que a regra 9.10 manda. Agora a 2.9 vale só para campos que **o protocolo não define**; campo definido
+  que a operação não aceita segue a regra da operação.
+- **Nenhuma implementação precisa mudar:** a 9.10 já era a regra que valia. A correção é no texto, para dois grupos não
+  implementarem diferente lendo regras diferentes.
+
 ### 2.9.1 (revisão do contrato)
 
 Uma revisão do contrato inteiro achou pontos em que dois grupos podiam implementar diferente e os dois dizerem que
