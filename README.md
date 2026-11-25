@@ -187,6 +187,12 @@ sequenceDiagram
   TB-->>B: 409 · Sala ja reservada no periodo solicitado
 ```
 
+**v2.10 — troca de sala.** O `update_reservation` que muda o `room_id` pega o lock das **duas** salas, origem e
+destino, sempre em ordem crescente de `room_id`: sem essa ordem, duas trocas em sentidos opostos (sala 1 → 2 e
+sala 2 → 1) travam uma na outra. Dentro da seção crítica o servidor checa o horário na sala de destino, grava a
+reserva e libera o horário na sala de origem. E a checagem de conflito **ignora a própria reserva** (regra 9.13):
+sem isso, esticar a reserva 27 de 13:00–13:50 para 13:00–14:40 colide com ela mesma e responde 409.
+
 ## Pendências
 
 Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementações de grupos diferentes:
@@ -203,6 +209,28 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 10. **Resolvida na v2.9.** `update_reservation` é só do dono: o admin lê e cancela reservas de terceiros, mas não altera (403).
 
 ## Versões
+
+### 2.10.0 (troca de sala e de dia na reserva)
+
+A planilha da EP-3 pede, no item (e)/(m), que o usuário comum atualize **sala, dia e faixa de horário** de uma
+reserva. Até a 2.9.2 o `update_reservation` recusava `room_id` e `date` com 400 e a troca era cancelar e criar outra.
+
+- **`update_reservation` aceita `room_id` e `date`** (regra 9.10), as duas opcionais: ausentes ou `""` = não alterar.
+  Cliente da v2.9.x continua valendo, porque não manda nenhuma das duas. A sala de destino é validada como numa
+  criação, na ordem da seção 4: 404 "Sala nao encontrada" → `participants` acima da `capacity` dela (400) →
+  `inactive` (409) → dia da semana do `date` fora dos `slots` dela (409) → horário ocupado (409).
+- **O conflito ignora a própria reserva** (regra 9.13). Era o furo mais sério: pela 5.4 ao pé da letra, esticar
+  13:00–13:50 para 13:00–14:40 na mesma sala conflita com ela mesma e dá 409. Dois servidores respondiam diferente
+  e os dois diziam seguir o protocolo.
+- **Lock das duas salas** na troca, em ordem crescente de `room_id` (regra 5.6).
+- **`end_time` resultante no passado → 400** (regra 9.3): alterar não encerra reserva. Encurtar uma reserva em
+  andamento até o fim de uma aula que ainda não terminou continua valendo e libera o resto do horário na hora — é o
+  "Ou UC libera a sala" do item (e)/(m).
+- **Explicitadas:** conflito é sempre por sala **e** por data (5.4); o mesmo usuário pode ter reservas simultâneas em
+  salas diferentes (9.14); a agenda do `read_room` não olha a hora, horário passado sem reserva segue `"livre"` (9.15).
+
+**Todo servidor precisa mudar:** aceitar as duas chaves novas e tirar a própria reserva da checagem de conflito.
+No cliente, a mudança é só de tela: a troca de sala ou de dia passa a caber numa requisição.
 
 ### 2.9.2 (correção de texto)
 

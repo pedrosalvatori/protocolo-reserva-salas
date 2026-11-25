@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.9.2
+  version: 2.10.0
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídos · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -42,7 +42,8 @@ info:
     - **2.8** `message` em português, sem acentos e sem emojis, **exatamente** como definido em cada operação.
     - **2.9** Campos **que este protocolo não define** são ignorados (interoperabilidade entre grupos). Campo que o
       protocolo define, mas que aquela operação não aceita, **não** é ignorado: vale a regra da própria operação, que
-      responde 400 — `room_id` e `date` no `update_reservation` (regra 9.10) e `email` no `update_user`.
+      responde 400 — `email` no `update_user`. (v2.10) `room_id` e `date` saíram dessa lista: o `update_reservation`
+      passou a aceitar as duas chaves (regra 9.10).
     - **2.10** Campo obrigatório ausente → 400. Qualquer campo enviado com `null` ou tipo errado (string; array nos campos
       de lista) → 400, inclusive os opcionais.
     - **2.11** `""` em atualização significa **não alterar**; em criação é inválido (400). Nas listas (`resources`,
@@ -52,7 +53,8 @@ info:
     - **2.13** (v2.4, ampliada na v2.9) **Toda atualização precisa ter pelo menos um campo preenchido.** Respondem
       **400 "Nenhum dado para atualizar"**: `update_user` com `user` e `password` vazios; `admin_update_user` com `user`,
       `password` e `role` vazios; `update_room` com `name`, `capacity`, `location` e `room_status` vazios e `resources` e
-      `slots` ausentes ou `[]`; `update_reservation` com `start_time`, `end_time`, `topic` e `participants` vazios.
+      `slots` ausentes ou `[]`; `update_reservation` com `start_time`, `end_time`, `topic` e `participants` vazios e
+      (v2.10) `room_id` e `date` ausentes ou vazios.
       Esse 400 só vale quando não há outro erro de formato (seção 4, passo 2).
     - **2.14** (v2.9.1) **Filtros opcionais** (`list_rooms`, `list_reservations`, `date` do `read_room`): ausente = sem
       filtro. Se enviado, precisa ser válido: `""` ou `null` → 400 com a message de formato da operação. O cliente omite
@@ -125,13 +127,15 @@ info:
     3. **401**: token sem sessão ativa;
     4. **403 de perfil**: operação de admin ou `scope: "all"` com token fora da whitelist;
     5. **404**: o usuário alvo, a sala ou a reserva da operação não existe, mesmo para quem não seria o dono (filtro de
-       listagem não dá 404, regra 9.12);
+       listagem não dá 404, regra 9.12). (v2.10) No `update_reservation`, primeiro a reserva, depois a sala de destino;
     6. **403 de dono e de regra**: reserva de terceiro; no `delete_user`, senha incorreta antes de último admin;
        no `admin_update_user`/`admin_delete_user`, último admin;
     7. **409 "Reserva ja encerrada"** (`update_reservation`, `delete_reservation`);
-    8. **400 que depende do registro**: `participants` maior que a `capacity` da sala; no `update_reservation`, o
-       horário resultante (valores novos + atuais) com `end_time` ≤ `start_time` ou `start_time` novo no passado;
-    9. **409**: conflitos, nesta ordem: na reserva, sala `inactive` → fora do funcionamento → período ocupado; no
+    8. **400 que depende do registro**: `participants` maior que a `capacity` da sala — no `update_reservation`, a da
+       **sala de destino** (v2.10); no `update_reservation`, o horário resultante (valores novos + atuais) com
+       `end_time` ≤ `start_time`, `start_time` no passado ou (v2.10) `end_time` no passado (regra 9.3);
+    9. **409**: conflitos, nesta ordem: na reserva, sala `inactive` → fora do funcionamento → período ocupado, sempre
+       olhando a **sala de destino** e a data resultante (v2.10, regras 9.10 e 9.13); no
        `update_room`, nome já cadastrado → capacidade abaixo de reserva ativa;
     10. executa (200/201).
 
@@ -142,10 +146,16 @@ info:
     - **5.1** Verificar a disponibilidade e gravar a reserva acontecem na **mesma seção crítica**, com lock por `room_id`.
     - **5.2** `check_availability` é informativo: `"true"` não reserva nada nem garante a reserva seguinte.
     - **5.3** Dois clientes reservando a mesma sala e horário: o primeiro a obter o lock recebe 201; o segundo, 409.
-    - **5.4** Há conflito quando `novo_inicio < fim_existente` **e** `novo_fim > inicio_existente`. Encostar (começar exatamente no fim de outra) **não** é conflito.
+    - **5.4** Há conflito quando `novo_inicio < fim_existente` **e** `novo_fim > inicio_existente`, entre as reservas
+      ativas da **mesma sala na mesma `date`**. Encostar (começar exatamente no fim de outra) **não** é conflito.
+      (v2.10) No `update_reservation`, a reserva que está sendo alterada fica **fora** da comparação (regra 9.13).
     - **5.5** (v2.9.1) `update_room` e `delete_room` usam o mesmo lock por `room_id`: checar as reservas ativas
       (capacidade, remoção) e gravar a sala acontecem sem uma reserva nova no meio, e uma sala que vira `inactive` não
       recebe reserva começada antes.
+    - **5.6** (v2.10) `update_reservation` que troca de sala pega o lock das **duas** salas, origem e destino, em ordem
+      crescente de `room_id` — sempre nessa ordem, senão duas trocas em sentidos opostos travam uma na outra. Checar a
+      disponibilidade na sala de destino, gravar a reserva e liberar o horário na sala de origem acontecem na mesma
+      seção crítica. Sem troca de sala, continua um lock só, o da sala da reserva.
 
     ## 6. Códigos de status
 
@@ -227,11 +237,15 @@ info:
     - **9.2** Data que passa na regex mas não existe no calendário (ex.: `2026-02-30`) → 400 com a message de formato da
       operação ("Dados da reserva em formato invalido", "Filtros em formato invalido" ou "Dados em formato invalido").
     - **9.3** **Passado**, na criação de reserva, é `date` + `start_time`: hoje é aceito, mas só numa aula que ainda não
-      começou (400 caso contrário). No `update_reservation`, um `start_time` novo que já passou também é 400.
+      começou (400 caso contrário). No `update_reservation` vale a combinação resultante (valores novos + atuais):
+      `date` + `start_time` no passado → 400 e (v2.10) `date` + `end_time` no passado → 400, porque alterar não encerra
+      reserva. Encurtar uma reserva **em andamento** até o fim de uma aula que ainda não terminou é válido e libera o
+      resto do horário na hora: é o "UC libera a sala" da EP-3. Para encerrar tudo antes, `delete_reservation`.
     - **9.4** Consultas aceitam datas passadas e respondem normalmente: `read_room` com `date`, `list_rooms` com o trio,
       `check_availability` e `list_reservations`. Só criar e alterar reserva olham o passado.
     - **9.5** `update_reservation` numa sala `inactive`: mudar `start_time` ou `end_time` → 409 "Sala indisponivel para
-      reserva". Mudar só `topic` ou `participants` continua permitido.
+      reserva". Mudar só `topic` ou `participants` continua permitido. (v2.10) Quem manda é a **sala de destino**:
+      trocar de sala olha o `room_status` da sala nova, e sair de uma sala `inactive` para uma `active` é permitido.
     - **9.6** `update_room` com `capacity` menor que os `participants` de alguma reserva ativa da sala →
       **409 "Capacidade menor que participantes de reservas ativas"**.
     - **9.7** `resources` no `update_room`: ausente ou `[]` = não alterar; uma lista nova substitui a antiga inteira; `["0"]` (lista
@@ -240,14 +254,41 @@ info:
     - **9.8** `delete_room` só remove sala sem reservas ativas (409 "Sala possui reservas ativas") e apaga junto as
       reservas encerradas dela, como a remoção de conta (regra 3.13).
     - **9.9** `update_reservation` é só do dono, inclusive para o admin (403 "Permissao insuficiente").
-    - **9.10** (v2.9.1) `update_reservation` com a chave `room_id` ou `date` → 400 "Dados da reserva em formato invalido"
-      (como `email` no `update_user`): para trocar de sala ou de dia, cancela-se e cria-se outra reserva.
+    - **9.10** (v2.10, muda a v2.9.1) `update_reservation` **aceita** `room_id` e `date`: é assim que o usuário troca
+      a reserva de sala ou de dia, numa requisição só (item (e)/(m) da EP-3). As duas chaves são **opcionais**:
+      ausentes ou vazias = não alterar, como `resources` no `update_room` (regra 9.7). Cliente da v2.9.x, que não manda
+      nenhuma das duas, continua valendo. A sala de destino é validada como numa criação, na ordem da seção 4: não
+      existe → 404 "Sala nao encontrada"; `participants` acima da `capacity` dela → 400; `inactive` → 409 "Sala
+      indisponivel para reserva"; dia da semana do `date` fora dos `slots` dela → 409 "Horario fora do funcionamento da
+      sala" (regra 8.4); horário ocupado por outra reserva → 409 "Sala ja reservada no periodo solicitado". A troca
+      roda sob o lock das duas salas (regra 5.6) e o horário antigo é liberado na mesma seção crítica. Até a v2.9.2
+      essas duas chaves respondiam 400 e a troca era cancelar e criar outra reserva.
     - **9.11** (v2.9.1) Consultas com horário (`check_availability`, `list_rooms` com o trio) e `end_time` ≤ `start_time`
       → 400 com a message de formato da operação.
     - **9.12** (v2.9.1) `list_reservations` com `room_id` de sala inexistente → 200 com `"count": "0"`: filtro não dá 404.
+    - **9.13** (v2.10) A checagem de conflito do `update_reservation` compara o horário resultante com as **demais**
+      reservas ativas da sala de destino naquela `date`: a própria reserva alterada fica de fora. Esticar a 13:00–13:50
+      para 13:00–14:40 na mesma sala, com o 13:50–14:40 livre, é **200** — não 409. Trocar de sala ou de dia também
+      ignora a reserva antiga, que sai do horário antigo na mesma seção crítica (regra 5.6).
+    - **9.14** (v2.10) O mesmo usuário **pode** ter reservas simultâneas em salas diferentes: o protocolo não impõe
+      limite por usuário e o conflito é sempre por sala (regra 5.4). Servidor que responder 409 para a segunda reserva
+      está fora do protocolo.
+    - **9.15** (v2.10) A `agenda` do `read_room` (regra 8.5) não olha a hora: horário que já passou e não tem reserva
+      continua `"livre"`. Quem recusa o passado é a criação (regra 9.3). O cliente que mostra os horários vagos de
+      **hoje** esconde as aulas que já começaram, senão oferece um horário que o `create_reservation` recusa com 400.
 
     ## 10. Histórico de versões
 
+    - **2.10.0** (troca de sala e de dia no `update_reservation`; **todo servidor precisa mudar**)
+      - `update_reservation` passa a aceitar `room_id` e `date`, opcionais: é a troca de sala ou de dia numa
+        requisição só, como a planilha da EP-3 pede no item (e)/(m). Antes as duas chaves davam 400 (regra 9.10).
+      - A checagem de conflito do `update_reservation` ignora a própria reserva (regra 9.13): esticar ou encurtar o
+        horário na mesma sala parou de dar 409 contra ela mesma. Era o furo que fazia dois servidores discordarem.
+      - Troca de sala roda sob o lock das duas salas, em ordem crescente de `room_id` (regra 5.6).
+      - `end_time` resultante no passado → 400 (regra 9.3): alterar não encerra reserva. Encurtar até o fim de uma
+        aula que ainda não terminou continua valendo e libera o resto do horário.
+      - Explicitadas: conflito é sempre por sala e por data (5.4); o mesmo usuário pode ter reservas simultâneas em
+        salas diferentes (9.14); a agenda do `read_room` não olha a hora (9.15).
     - **2.9.2** (correção de texto; nenhuma regra nova, nenhuma resposta nova)
       - A regra 2.9 contradizia a 9.10. Dizia apenas "campos desconhecidos são ignorados", o que permitia ler que um
         `room_id` ou `date` enviado no `update_reservation` devia ser ignorado (200) em vez de recusado (400). Agora a
@@ -310,10 +351,11 @@ info:
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   x-novidades:
-    versao: 2.9.2
-    data: 19/11/2026
-    titulo: Ajustes no protocolo (versões 2.1 a 2.9.2)
+    versao: 2.10.0
+    data: 25/11/2026
+    titulo: Ajustes no protocolo (versões 2.1 a 2.10.0)
     itens:
+      - '**Troca de sala e de dia no `update_reservation` (2.10.0) — todo servidor precisa mudar:** `room_id` e `date` passam a ser aceitos, opcionais (ausentes ou vazios = não alterar), para o usuário trocar a reserva de sala ou de dia numa requisição só, como a EP-3 pede no item (e)/(m); até a 2.9.2 as duas chaves davam 400. A sala de destino é validada como numa criação (404, capacidade, `inactive`, funcionamento, horário ocupado) e a troca roda sob o lock das duas salas, em ordem crescente de `room_id`. Junto, três furos fechados: a checagem de conflito do `update_reservation` ignora a própria reserva (esticar o horário na mesma sala não dá mais 409 contra ela mesma), `end_time` resultante no passado → 400 e o mesmo usuário pode ter reservas simultâneas em salas diferentes.'
       - '**Correção de texto (2.9.2):** a regra 2.9 ("campos desconhecidos são ignorados") contradizia a 9.10 (`room_id`/`date` no `update_reservation` → 400): dava para ler que esses campos deviam ser ignorados. Agora está explícito que a 2.9 vale só para campos que o protocolo não define. Nenhuma regra nova, nenhuma resposta nova e nenhuma implementação precisa mudar.'
       - '**Revisão do contrato (2.9.1):** o limite de 8192 bytes vale só para requisições (respostas de listagem podem passar disso; o cliente lê até o `\n`). Filtro opcional não preenchido é omitido (`""` → 400). Mudar senha, user ou role não encerra sessão. `update_reservation` com `room_id`/`date` → 400. A ordem de validação ficou completa (seção 4). Nenhuma resposta nova.'
       - '**Dúvidas de implementação (2.9):** no `update_room`, `resources: []` mantém a lista e `["0"]` apaga todos os recursos; `capacity` abaixo dos participantes de uma reserva ativa → 409 "Capacidade menor que participantes de reservas ativas"; `update_room` e `update_reservation` sem nada para mudar → 400 "Nenhum dado para atualizar"; mudar o horário de uma reserva em sala `inactive` → 409 "Sala indisponivel para reserva". A ordem de validação ficou obrigatória (404 antes do 403 de dono; token ausente = 400). Data inexistente → 400 e passado = data + hora de início. Detalhes nas seções 4 e 9.'
@@ -771,16 +813,20 @@ operations:
     channel: {$ref: '#/channels/conexao'}
     title: update_reservation
     x-acesso: dono
-    summary: Altera horário, assunto ou participantes de uma reserva.
+    summary: Altera sala, dia, horário, assunto ou participantes de uma reserva.
     description: |
       - `""` é ignorado; `null` → 400. Tudo vazio → 400 "Nenhum dado para atualizar" (regra 2.13).
       - Só o dono altera: reserva de terceiro → 403, inclusive para o admin (regra 9.9). Reserva inexistente → 404, antes do 403.
-      - `room_id` e `date` não mudam: enviar uma dessas chaves → 400 (regra 9.10). Para trocar de sala ou de dia,
-        cancela-se e cria-se outra reserva.
-      - Estender o horário passa pelo mesmo lock de `create_reservation`. Novo `start_time` no passado → 400 (regra 9.3).
+      - (v2.10) `room_id` e `date` **podem** vir e são opcionais (ausentes ou `""` = não alterar): é a troca de sala ou
+        de dia numa requisição só (regra 9.10). Sala de destino inexistente → 404 "Sala nao encontrada", depois do 404
+        da reserva. `participants` acima da `capacity` da sala de destino → 400.
+      - O conflito é checado contra as **outras** reservas da sala de destino: a reserva não conflita consigo mesma
+        (regra 9.13). Trocar de sala roda sob o lock das duas salas (regra 5.6).
+      - Estender o horário passa pelo mesmo lock de `create_reservation`. `start_time` ou `end_time` resultante no
+        passado → 400 (regra 9.3); encurtar até o fim de uma aula que ainda não terminou libera o resto do horário.
       - Reserva já encerrada → 409 "Reserva ja encerrada".
-      - Mudar `start_time` ou `end_time` com a sala `inactive` → 409 "Sala indisponivel para reserva" (regra 9.5).
-      - Novo horário fora do funcionamento da sala → 409 "Horario fora do funcionamento da sala" (regra 8.4).
+      - Mudar `start_time`, `end_time`, `room_id` ou `date` com a sala de destino `inactive` → 409 "Sala indisponivel para reserva" (regra 9.5).
+      - Novo horário fora do funcionamento da sala de destino → 409 "Horario fora do funcionamento da sala" (regra 8.4).
     tags: [{$ref: '#/components/tags/reservas'}]
     messages: [{$ref: '#/channels/conexao/messages/update_reservation'}]
     reply:
@@ -1931,12 +1977,22 @@ components:
       summary: 'C → S · altera uma reserva'
       payload:
         type: object
-        description: 'Campo "" = não alterar, mas pelo menos um precisa vir preenchido (regra 2.13). As chaves room_id e date são proibidas (400, regra 9.10).'
+        description: 'Campo "" = não alterar, mas pelo menos um precisa vir preenchido (regra 2.13). room_id e date são opcionais: ausentes ou "" = não alterar (v2.10, regra 9.10).'
         required: [op, token, reservation_id, start_time, end_time, topic, participants]
         properties:
           op: {type: string, const: update_reservation}
           token: {$ref: '#/components/schemas/token'}
           reservation_id: {$ref: '#/components/schemas/reservation_id'}
+          room_id:
+            description: (v2.10) Sala de destino, ou "" / ausente para manter. Trocar de sala revalida capacidade, funcionamento e conflito na sala nova (regra 9.10).
+            anyOf:
+              - $ref: '#/components/schemas/room_id'
+              - $ref: '#/components/schemas/nao_alterar'
+          date:
+            description: (v2.10) Novo dia, ou "" / ausente para manter (regra 9.10).
+            anyOf:
+              - $ref: '#/components/schemas/date'
+              - $ref: '#/components/schemas/nao_alterar'
           start_time:
             description: Novo início, ou "" para manter.
             anyOf:
@@ -1959,19 +2015,21 @@ components:
               - $ref: '#/components/schemas/nao_alterar'
         allOf:
           - not:
-              description: 'A chave `date` não pode ser enviada: o dia da reserva não muda (regra 9.10).'
-              required: [date]
-          - not:
-              description: 'A chave `room_id` não pode ser enviada: a sala da reserva não muda (regra 9.10).'
-              required: [room_id]
-          - not:
-              description: '`start_time`, `end_time`, `topic` e `participants` vazios: não há nada para atualizar (regra 2.13).'
+              description: '`start_time`, `end_time`, `topic` e `participants` vazios, com `room_id` e `date` ausentes ou vazios: não há nada para atualizar (regra 2.13).'
               x-message: Nenhum dado para atualizar
               required: [start_time, end_time, topic, participants]
-              properties: {start_time: {const: ''}, end_time: {const: ''}, topic: {const: ''}, participants: {const: ''}}
+              properties:
+                start_time: {const: ''}
+                end_time: {const: ''}
+                topic: {const: ''}
+                participants: {const: ''}
+                room_id: {const: ''}
+                date: {const: ''}
       examples:
         - name: requisicao
           payload: {"op": "update_reservation", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "reservation_id": "27", "start_time": "", "end_time": "15:30", "topic": "", "participants": "8"}
+        - name: troca de sala e de dia (v2.10)
+          payload: {"op": "update_reservation", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "reservation_id": "27", "room_id": "4", "date": "2026-09-22", "start_time": "", "end_time": "", "topic": "", "participants": ""}
 
     update_reservation_response:
       name: update_reservation_response
@@ -1994,6 +2052,7 @@ components:
           - $ref: '#/components/schemas/E401_token'
           - $ref: '#/components/schemas/E403_permissao'
           - $ref: '#/components/schemas/E404_reserva'
+          - $ref: '#/components/schemas/E404_sala'
           - $ref: '#/components/schemas/E409_periodo'
           - $ref: '#/components/schemas/E409_encerrada'
           - $ref: '#/components/schemas/E409_sala_indisponivel'
@@ -2012,6 +2071,8 @@ components:
           payload: {"op": "update_reservation_response", "status": "403", "message": "Permissao insuficiente"}
         - name: '404'
           payload: {"op": "update_reservation_response", "status": "404", "message": "Reserva nao encontrada"}
+        - name: 404 sala de destino (v2.10)
+          payload: {"op": "update_reservation_response", "status": "404", "message": "Sala nao encontrada"}
         - name: 409 periodo ocupado
           payload: {"op": "update_reservation_response", "status": "409", "message": "Sala ja reservada no periodo solicitado"}
         - name: 409 reserva encerrada

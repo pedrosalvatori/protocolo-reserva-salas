@@ -708,9 +708,36 @@ async function bateria(admin) {
       if (data?.status === '200' && data.count !== '0') problemas.push(falha(`count ${JSON.stringify(data.count)}; a sala não existe`));
       return problemas;
     });
-    await teste('update_reservation com a chave date → 400 (regra 9.10)', async () => {
+    await teste('update_reservation com room_id de sala inexistente → 404 (regra 9.10)', async () => {
       precisa(sala.reservaA, 'a reserva não foi criada');
-      return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '', topic: 'Outro topico', participants: '', date: data1 }, { status: '400', message: 'Dados da reserva em formato invalido' })).problemas;
+      return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, room_id: '999999999', start_time: '', end_time: '', topic: '', participants: '' }, { status: '404', message: 'Sala nao encontrada' })).problemas;
+    });
+    await teste('update_reservation trocando o dia → 200, e de volta (regra 9.10)', async () => {
+      precisa(sala.reservaA, 'a reserva não foi criada');
+      const x = new Date(`${data1}T12:00:00`);
+      x.setDate(x.getDate() + 7);
+      const outroDia = `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+      const ida = await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, date: outroDia, start_time: '', end_time: '', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' });
+      if (ida.data?.status !== '200') return ida.problemas;
+      const lido = await chamar(cA, { op: 'read_reservation', token: A.token, reservation_id: sala.reservaA }, { status: '200' });
+      if (lido.data?.status === '200' && lido.data.date !== outroDia) lido.problemas.push(falha(`a reserva ficou em ${JSON.stringify(lido.data.date)}; o update com date devia movê-la para ${outroDia}`));
+      const volta = await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, date: data1, start_time: '', end_time: '', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' });
+      return [...ida.problemas, ...lido.problemas, ...volta.problemas];
+    });
+    await teste('update_reservation trocando de sala → 200, e de volta (regras 9.10 e 5.6)', async () => {
+      precisa(sala.reservaA && A.token, 'a reserva não foi criada');
+      const d = numDia(data1);
+      const { data } = await chamar(cA, { op: 'list_rooms', token: A.token }, { status: '200' });
+      const destino = data?.rooms?.find((r) => r.room_id !== sala.id && r.room_status === 'active' && Number(r.capacity) >= 4 && [`${d}T1`, `${d}T2`].every((c) => r.slots?.includes(c)));
+      if (!destino) throw new Pulo('não há outra sala ativa que funcione nesse horário; crie uma para testar a troca');
+      const livre = await chamar(cA, { op: 'check_availability', token: A.token, room_id: destino.room_id, date: data1, start_time: '13:00', end_time: '14:40' }, { status: '200' });
+      if (livre.data?.available !== 'true') throw new Pulo(`a sala ${destino.room_id} já está ocupada em ${data1} 13:00`);
+      const ida = await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, room_id: destino.room_id, start_time: '', end_time: '', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' });
+      if (ida.data?.status !== '200') return ida.problemas;
+      const antiga = await chamar(cA, { op: 'check_availability', token: A.token, room_id: sala.id, date: data1, start_time: '13:00', end_time: '14:40' }, { status: '200' });
+      if (antiga.data?.status === '200' && antiga.data.available !== 'true') antiga.problemas.push(falha('depois da troca, o horário na sala de origem continuou ocupado; ele é liberado na mesma seção crítica (regra 5.6)'));
+      const volta = await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, room_id: sala.id, start_time: '', end_time: '', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' });
+      return [...ida.problemas, ...antiga.problemas, ...volta.problemas];
     });
     await teste('update_reservation estendendo por cima de outra reserva → 409', async () => {
       precisa(sala.reservaA && sala.reservaB, 'faltam as duas reservas');
@@ -719,6 +746,12 @@ async function bateria(admin) {
     await teste('update_reservation encurtando ("" no resto) → 200', async () => {
       precisa(sala.reservaA, 'a reserva não foi criada');
       return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '13:50', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' })).problemas;
+    });
+    await teste('update_reservation esticando a própria reserva → 200, nunca 409 (regra 9.13)', async () => {
+      precisa(sala.reservaA, 'a reserva não foi criada');
+      // o teste anterior deixou a reserva em 13:00–13:50; esticar até 14:40 só esbarra nela mesma, que fica fora da
+      // checagem de conflito. Servidor que compara o horário novo com a própria reserva responde 409 aqui.
+      return (await chamar(cA, { op: 'update_reservation', token: A.token, reservation_id: sala.reservaA, start_time: '', end_time: '14:40', topic: '', participants: '' }, { status: '200', message: 'Reserva atualizada com sucesso' })).problemas;
     });
     await teste('update_reservation sem nada para mudar → 400 "Nenhum dado para atualizar" (regra 2.13)', async () => {
       precisa(sala.reservaA, 'a reserva não foi criada');

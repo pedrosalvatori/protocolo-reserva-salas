@@ -1,8 +1,8 @@
 // Documentação do protocolo no estilo do Swagger UI, montada no navegador a partir do asyncapi.yaml.
 import { load, CORE_SCHEMA } from './vendor/js-yaml.js';
 import { Marked } from './vendor/marked.js';
-import { validate } from './validator.js?v=2.9.2';
-import { deref, variantsOf, oneLine, expected400 } from './contract.js?v=2.9.2';
+import { validate } from './validator.js?v=2.10.0';
+import { deref, variantsOf, oneLine, expected400 } from './contract.js?v=2.10.0';
 
 const SPEC_URL = 'asyncapi.yaml';
 const LIMIT = 8192;
