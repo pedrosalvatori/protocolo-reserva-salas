@@ -3,7 +3,7 @@ id: 'urn:br:edu:utfpr:pg:sd:reserva-salas'
 
 info:
   title: Reserva de Salas · Protocolo de Mensagens
-  version: 2.10.0
+  version: 2.11.0
   description: |
     Protocolo cliente/servidor do **Sistema Inteligente de Reserva de Salas de Reunião/Estudo em Campus**
     (Sistemas Distribuídos · BCC · UTFPR-PG · Prof. Dr. Richard Ribeiro).
@@ -203,7 +203,8 @@ info:
       semana, na ordem da tabela, com o código completo (`3T1`) e `slot_status` `"livre"` ou `"indisponivel"`
       (reservado ou sala `inactive`). Sala que não funciona nesse dia → `agenda` vazia. Horário reservado traz `user`
       (quem reservou) para qualquer usuário logado, como pede a Entrega 2 (item e); o `reservation_id` só vai para o
-      admin e para o dono da reserva (mesma regra do `read_reservation`).
+      admin e para o dono da reserva (mesma regra do `read_reservation`). Sem `room_id`, a `agenda` de cada sala
+      vem dentro do seu item de `rooms` (regra 9.16).
     - **8.6** `room_status`: `active` = sala livre para reservas, `inactive` = indisponível (manutenção, limpeza).
     - **8.7** No `update_room`, `slots` ausente ou `[]` = não alterar; uma lista nova substitui a antiga inteira.
       Mudar o funcionamento não apaga as reservas já feitas.
@@ -276,9 +277,22 @@ info:
     - **9.15** (v2.10) A `agenda` do `read_room` (regra 8.5) não olha a hora: horário que já passou e não tem reserva
       continua `"livre"`. Quem recusa o passado é a criação (regra 9.3). O cliente que mostra os horários vagos de
       **hoje** esconde as aulas que já começaram, senão oferece um horário que o `create_reservation` recusa com 400.
+    - **9.16** (v2.11) `room_id` é **opcional** no `read_room`: com a chave, lê uma sala; sem a chave, lê todas, em
+      `count` + `rooms`, na mesma ordem do `list_rooms`. É a leitura do CRUD com chave opcional. Sem `room_id` não
+      existe **404**: não há sala para não encontrar. Com `date`, cada sala de `rooms` traz a sua `agenda` daquele
+      dia (regra 8.5) — é o dia inteiro de todas as salas numa requisição só. `room_id` **enviado** fora do formato
+      continua **400**: o 200 com a lista vale só quando a chave não vem.
 
     ## 10. Histórico de versões
 
+    - **2.11.0** (`read_room` sem `room_id` lê todas as salas; **todo servidor precisa mudar**)
+      - `room_id` passa a ser opcional no `read_room` (regra 9.16): sem a chave, a resposta traz `count` + `rooms`
+        com todas as salas, e nunca 404. Antes, `read_room` sem `room_id` era 400. É a leitura do CRUD da planilha,
+        em que a chave é opcional: com ela lê um registro, sem ela lê todos.
+      - Com `date` e sem `room_id`, cada sala vem com a sua `agenda` do dia: dá para ver o dia inteiro de todas as
+        salas numa requisição só, no lugar de um `read_room` por sala.
+      - O `list_rooms` não muda: continua com o trio `date`+`start_time`+`end_time`, o `min_capacity` e o
+        `available` sim/não do intervalo.
     - **2.10.0** (troca de sala e de dia no `update_reservation`; **todo servidor precisa mudar**)
       - `update_reservation` passa a aceitar `room_id` e `date`, opcionais: é a troca de sala ou de dia numa
         requisição só, como a planilha da EP-3 pede no item (e)/(m). Antes as duas chaves davam 400 (regra 9.10).
@@ -351,10 +365,11 @@ info:
       - `delete_user` com senha incorreta: de 401 para **403 "Senha incorreta"**, sem derrubar a sessão (regra 3.9).
     - **2.0.0**: versão da planilha *Protocolo de troca de Mensagens*.
   x-novidades:
-    versao: 2.10.0
-    data: 25/11/2026
-    titulo: Ajustes no protocolo (versões 2.1 a 2.10.0)
+    versao: 2.11.0
+    data: 26/11/2026
+    titulo: Ajustes no protocolo (versões 2.1 a 2.11.0)
     itens:
+      - '**`read_room` sem `room_id` (2.11.0) — todo servidor precisa mudar:** a chave virou opcional. Com `room_id`, o `read_room` lê uma sala, como antes; sem `room_id`, lê todas, em `count` + `rooms`, e aí nunca responde 404. Com `date` e sem `room_id`, cada sala vem com a sua `agenda` daquele dia: é o dia inteiro de todas as salas numa requisição só, no lugar de um `read_room` por sala. `room_id` enviado fora do formato continua 400 (regra 9.16).'
       - '**Troca de sala e de dia no `update_reservation` (2.10.0) — todo servidor precisa mudar:** `room_id` e `date` passam a ser aceitos, opcionais (ausentes ou vazios = não alterar), para o usuário trocar a reserva de sala ou de dia numa requisição só, como a EP-3 pede no item (e)/(m); até a 2.9.2 as duas chaves davam 400. A sala de destino é validada como numa criação (404, capacidade, `inactive`, funcionamento, horário ocupado) e a troca roda sob o lock das duas salas, em ordem crescente de `room_id`. Junto, três furos fechados: a checagem de conflito do `update_reservation` ignora a própria reserva (esticar o horário na mesma sala não dá mais 409 contra ela mesma), `end_time` resultante no passado → 400 e o mesmo usuário pode ter reservas simultâneas em salas diferentes.'
       - '**Correção de texto (2.9.2):** a regra 2.9 ("campos desconhecidos são ignorados") contradizia a 9.10 (`room_id`/`date` no `update_reservation` → 400): dava para ler que esses campos deviam ser ignorados. Agora está explícito que a 2.9 vale só para campos que o protocolo não define. Nenhuma regra nova, nenhuma resposta nova e nenhuma implementação precisa mudar.'
       - '**Revisão do contrato (2.9.1):** o limite de 8192 bytes vale só para requisições (respostas de listagem podem passar disso; o cliente lê até o `\n`). Filtro opcional não preenchido é omitido (`""` → 400). Mudar senha, user ou role não encerra sessão. `update_reservation` com `room_id`/`date` → 400. A ordem de validação ficou completa (seção 4). Nenhuma resposta nova.'
@@ -371,6 +386,7 @@ info:
       - '**Senha errada no `delete_user` (2.1):** responde **403 "Senha incorreta"** e a sessão continua. Antes era 401, que fazia o cliente sair sem o servidor encerrar o token, e o login seguinte ficava bloqueado (409) por até 30 min.'
       - '**Testador automático:** `node scripts/testar-servidor.mjs IP PORTA` roda mais de 100 testes contra o servidor de vocês e aponta o que está fora do contrato. Veja o README.'
     o_que_mudar:
+      - '**Servidor (2.11):** aceitar o `read_room` sem `room_id` e responder `count` + `rooms` com todas as salas, cada uma com a sua `agenda` quando vier `date`, no lugar do 400.'
       - '**Cliente e servidor:** trocar a regex de e-mail.'
       - '**Servidor:** 403 "Senha incorreta" no `delete_user`; validar o login na ordem 400 → 401 → 409; checar e criar a sessão sob o mesmo lock; ao remover uma conta, apagar cadastro, sessão e todas as reservas; responder 400 "Nenhum dado para atualizar" quando a alteração de usuário vier toda vazia; manter a whitelist de tokens de admin e liberar as operações de admin só por ela; criar o admin inicial (`admin@admin.com` / `admin`) quando não houver nenhum admin; guardar os `slots` das salas no código da UTFPR (`2M1`), validar reservas pela tabela de aulas e montar a agenda do `read_room`; seguir a ordem de validação da seção 4 e as regras da seção 9 (resources, capacidade, sala inactive, datas, nada para atualizar).'
       - '**Cliente:** tratar o 403 do `delete_user` sem descartar o token; reconectar e reenviar quando o socket estiver fechado; só descartar o token depois do `logout_response`; usar o `role` do login só para montar a tela; no cadastro e na edição de sala, mostrar a grade da UTFPR (dias × aulas) para marcar os horários; no `update_room`, mandar `resources: []` para manter e `["0"]` para apagar todos.'
@@ -694,6 +710,8 @@ operations:
     summary: Lê uma sala.
     description: |
       - Liberado para qualquer usuário logado. Devolve os `slots` da sala.
+      - **Sem `room_id` (v2.11)**, devolve todas as salas em `count` + `rooms`, e nunca 404 (regra 9.16).
+        Com `date`, cada sala vem com a sua `agenda`: o dia inteiro de todas as salas numa requisição.
       - Com `date`, devolve a `agenda` do dia: cada horário da sala nesse dia da semana como "livre" ou "indisponivel"
         e, nos reservados, quem reservou (`user`). O `reservation_id` só vai para o admin e para o dono (regra 8.5).
         `date` pode ser passada (regra 9.4).
@@ -1532,13 +1550,17 @@ components:
       summary: 'C → S · lê uma sala'
       payload:
         type: object
-        required: [op, token, room_id]
+        description: 'room_id e date são opcionais: sem room_id, a resposta traz todas as salas (regra 9.16).'
+        required: [op, token]
         properties:
           op: {type: string, const: read_room}
           token: {$ref: '#/components/schemas/token'}
-          room_id: {$ref: '#/components/schemas/room_id'}
+          room_id:
+            description: Opcional (v2.11). Com room_id lê uma sala; sem room_id lê todas, em count e rooms (regra 9.16).
+            allOf:
+              - $ref: '#/components/schemas/room_id'
           date:
-            description: Opcional. Com date, a resposta traz a agenda da sala nesse dia (regra 8.5).
+            description: Opcional. Com date, a resposta traz a agenda do dia (regra 8.5); sem room_id, a agenda de cada sala.
             allOf:
               - $ref: '#/components/schemas/date'
       examples:
@@ -1546,6 +1568,10 @@ components:
           payload: {"op": "read_room", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9", "room_id": "1"}
         - name: com agenda do dia
           payload: {"op": "read_room", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "room_id": "1", "date": "2026-09-15"}
+        - name: todas as salas (sem room_id)
+          payload: {"op": "read_room", "token": "c0fc3c713f09a43384ac08f7d91fca430dcbc6466fff9284ce4571bdc2c8f9f9"}
+        - name: todas as salas com a agenda do dia
+          payload: {"op": "read_room", "token": "c6a07b8585ace1409236251c4eccbe4a2807bb4a7cf1d086de6d603c2794796b", "date": "2026-09-15"}
 
     read_room_response:
       name: read_room_response
@@ -1576,6 +1602,18 @@ components:
                 type: array
                 description: Só quando a requisição traz date. Um item por horário da sala, na ordem da tabela.
                 items: {$ref: '#/components/schemas/Horario'}
+          - title: '200 · Todas as salas (sem room_id, v2.11)'
+            type: object
+            required: [count, rooms]
+            properties:
+              status: {const: '200'}
+              message: {const: Consulta realizada com sucesso}
+              date: {$ref: '#/components/schemas/date'}
+              count: {$ref: '#/components/schemas/count'}
+              rooms:
+                type: array
+                description: Todas as salas, na ordem do list_rooms. Com date, cada sala traz a sua agenda (regra 9.16).
+                items: {$ref: '#/components/schemas/Sala'}
           - $ref: '#/components/schemas/E400_dados'
           - $ref: '#/components/schemas/E401_token'
           - $ref: '#/components/schemas/E404_sala'
@@ -1587,6 +1625,8 @@ components:
           payload: {"op": "read_room_response", "status": "200", "message": "Consulta realizada com sucesso", "room_id": "1", "name": "Sala de Estudo B12", "capacity": "12", "location": "Bloco B - 1 andar", "resources": ["projetor", "tv"], "room_status": "active", "slots": ["2M1", "2M2", "2M3", "3T1", "3T2", "3T3", "5N1", "5N2"], "date": "2026-09-15", "agenda": [{"slot": "3T1", "start_time": "13:00", "end_time": "13:50", "slot_status": "indisponivel", "user": "joao", "reservation_id": "27"}, {"slot": "3T2", "start_time": "13:50", "end_time": "14:40", "slot_status": "indisponivel", "user": "joao", "reservation_id": "27"}, {"slot": "3T3", "start_time": "14:40", "end_time": "15:30", "slot_status": "livre"}]}
         - name: 200 com agenda (outro usuário)
           payload: {"op": "read_room_response", "status": "200", "message": "Consulta realizada com sucesso", "room_id": "1", "name": "Sala de Estudo B12", "capacity": "12", "location": "Bloco B - 1 andar", "resources": ["projetor", "tv"], "room_status": "active", "slots": ["2M1", "2M2", "2M3", "3T1", "3T2", "3T3", "5N1", "5N2"], "date": "2026-09-15", "agenda": [{"slot": "3T1", "start_time": "13:00", "end_time": "13:50", "slot_status": "indisponivel", "user": "joao"}, {"slot": "3T2", "start_time": "13:50", "end_time": "14:40", "slot_status": "indisponivel", "user": "joao"}, {"slot": "3T3", "start_time": "14:40", "end_time": "15:30", "slot_status": "livre"}]}
+        - name: 200 todas as salas (sem room_id, com date)
+          payload: {"op": "read_room_response", "status": "200", "message": "Consulta realizada com sucesso", "date": "2026-09-15", "count": "2", "rooms": [{"room_id": "1", "name": "Sala de Estudo B12", "capacity": "12", "location": "Bloco B - 1 andar", "resources": ["projetor", "tv"], "room_status": "active", "slots": ["3T1", "3T2", "3T3"], "agenda": [{"slot": "3T1", "start_time": "13:00", "end_time": "13:50", "slot_status": "indisponivel", "user": "joao"}, {"slot": "3T2", "start_time": "13:50", "end_time": "14:40", "slot_status": "livre"}, {"slot": "3T3", "start_time": "14:40", "end_time": "15:30", "slot_status": "livre"}]}, {"room_id": "2", "name": "Laboratorio B204", "capacity": "30", "location": "Bloco B - 2 andar", "resources": ["projetor"], "room_status": "active", "slots": ["2M1", "2M2"], "agenda": []}]}
         - name: '400'
           payload: {"op": "read_room_response", "status": "400", "message": "Dados em formato invalido"}
         - name: '401'
@@ -2372,7 +2412,7 @@ components:
     Sala:
       title: Sala
       type: object
-      description: Item de `rooms` (list_rooms). `available` só aparece quando date, start_time e end_time são enviados.
+      description: Item de `rooms` (list_rooms e read_room sem room_id). `available` só aparece nas consultas com date, start_time e end_time; `agenda`, só no read_room sem room_id com date.
       required: [room_id, name, capacity, location, resources, room_status, slots]
       properties:
         room_id: {$ref: '#/components/schemas/room_id'}
@@ -2383,6 +2423,10 @@ components:
         room_status: {$ref: '#/components/schemas/room_status'}
         slots: {$ref: '#/components/schemas/slots'}
         available: {$ref: '#/components/schemas/available'}
+        agenda:
+          type: array
+          description: Só no read_room sem room_id, com date (regra 9.16). Um item por horário da sala nesse dia; vazia se a sala não funciona nele.
+          items: {$ref: '#/components/schemas/Horario'}
     Horario:
       title: Horário da agenda
       type: object

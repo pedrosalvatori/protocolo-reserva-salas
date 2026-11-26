@@ -1,8 +1,8 @@
 // Documentação do protocolo no estilo do Swagger UI, montada no navegador a partir do asyncapi.yaml.
 import { load, CORE_SCHEMA } from './vendor/js-yaml.js';
 import { Marked } from './vendor/marked.js';
-import { validate } from './validator.js?v=2.10.0';
-import { deref, variantsOf, oneLine, expected400 } from './contract.js?v=2.10.0';
+import { validate } from './validator.js?v=2.11.0';
+import { deref, variantsOf, oneLine, expected400 } from './contract.js?v=2.11.0';
 
 const SPEC_URL = 'asyncapi.yaml';
 const LIMIT = 8192;
@@ -152,7 +152,10 @@ function payloadNotes(p) {
 }
 
 function exampleFor(o, v) {
-  const ex = (o.res.examples || []).find((e) => e.payload?.status === v.status && e.payload?.message === v.message);
+  // Um status+message pode ter mais de uma variante (o read_room responde uma sala ou todas, regra 9.16):
+  // fica com o exemplo que combina com esta variante, não com o primeiro do mesmo status.
+  const candidatos = (o.res.examples || []).filter((e) => e.payload?.status === v.status && e.payload?.message === v.message);
+  const ex = (v.schema ? candidatos.find((e) => validate(v.schema, e.payload).length === 0) : null) || candidatos[0];
   if (ex) return oneLine(ex.payload);
   const obj = { op: o.res.payload?.properties?.op?.const ?? o.res.name, status: v.status, message: v.message };
   for (const k of v.extras) obj[k] = '…';

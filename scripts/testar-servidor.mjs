@@ -137,9 +137,14 @@ async function chamar(con, req, esperado = {}) {
   if (data.op === 'error') {
     for (const e of validate(OPS.get('linha_invalida').res.payload, data)) problemas.push(falha(`fora do contrato: ${e.msg}`));
   } else if (conhecida && data.op === opEsperada) {
-    const v = variantsOf(OPS.get(opReq).res).find((x) => x.status === data.status && x.message === data.message);
-    if (!v) problemas.push(falha(`"${data.status} · ${data.message}" não é uma resposta prevista de ${opReq}`));
-    else for (const e of validate(v.schema, data)) problemas.push(falha(`fora do contrato: ${e.msg}`));
+    // Um status+message pode ter mais de uma variante (o read_room responde uma sala ou todas, regra 9.16):
+    // vale se a resposta casar com alguma delas; se não casar com nenhuma, mostra os erros da mais próxima.
+    const vs = variantsOf(OPS.get(opReq).res).filter((x) => x.status === data.status && x.message === data.message);
+    if (!vs.length) problemas.push(falha(`"${data.status} · ${data.message}" não é uma resposta prevista de ${opReq}`));
+    else {
+      const erros = vs.map((v) => validate(v.schema, data)).sort((a, b) => a.length - b.length);
+      for (const e of erros[0]) problemas.push(falha(`fora do contrato: ${e.msg}`));
+    }
   }
 
   const status = [].concat(esperado.status ?? []);
@@ -481,6 +486,17 @@ async function bateria(admin) {
       precisa(A.token, 'o login falhou');
       return (await chamar(cA, { op: 'read_room', token: A.token, room_id: '999999999' }, { status: '404', message: 'Sala nao encontrada' })).problemas;
     });
+    await teste('read_room sem room_id → 200 com todas as salas (regra 9.16)', async () => {
+      precisa(A.token, 'o login falhou');
+      const { data, problemas } = await chamar(cA, { op: 'read_room', token: A.token }, { status: '200' });
+      if (data?.status !== '200') return problemas;
+      if (!Array.isArray(data.rooms)) return [...problemas, falha('sem room_id, a resposta deve trazer rooms com todas as salas (regra 9.16)')];
+      if (data.count !== String(data.rooms.length)) problemas.push(falha(`count ${JSON.stringify(data.count)}; esperado ${JSON.stringify(String(data.rooms.length))}`));
+      if (sala.id && !data.rooms.some((r) => r.room_id === sala.id)) problemas.push(falha('a sala de teste não apareceu na lista'));
+      if ('room_id' in data) problemas.push(falha('sem room_id na requisição, a resposta não deve trazer room_id solto'));
+      if (data.rooms.some((r) => 'agenda' in r)) problemas.push(falha('sem date, nenhuma sala deve trazer agenda'));
+      return problemas;
+    });
     await teste('list_rooms sem filtros → 200, sem o campo available', async () => {
       precisa(A.token, 'o login falhou');
       const { data, problemas } = await chamar(cA, { op: 'list_rooms', token: A.token }, { status: '200' });
@@ -589,6 +605,24 @@ async function bateria(admin) {
       const t4 = h[`${d}T4`];
       if (t3?.user !== B.user || t3?.reservation_id !== sala.reservaB) problemas.push(falha(`${d}T3 é reserva do próprio usuário: esperado user ${B.user} e reservation_id ${sala.reservaB}`));
       if (sala.criada && t4?.slot_status !== 'livre') problemas.push(falha(`${d}T4 veio ${JSON.stringify(t4?.slot_status)}; está livre`));
+      return problemas;
+    });
+    await teste('read_room sem room_id, com date → cada sala com a sua agenda (regra 9.16)', async () => {
+      precisa(sala.reservaA && B.token, 'falta a reserva ou o segundo usuário');
+      const { data, problemas } = await chamar(cB, { op: 'read_room', token: B.token, date: data1 }, { status: '200' });
+      if (data?.status !== '200') return problemas;
+      if (!Array.isArray(data.rooms)) return [...problemas, falha('sem room_id, a resposta deve trazer rooms com todas as salas (regra 9.16)')];
+      if (data.date !== data1) problemas.push(falha(`date ${JSON.stringify(data.date)}; esperado ${JSON.stringify(data1)}`));
+      const semAgenda = data.rooms.filter((r) => !Array.isArray(r.agenda)).map((r) => r.room_id);
+      if (semAgenda.length) problemas.push(falha(`com date, cada sala precisa trazer a sua agenda; sem agenda: ${JSON.stringify(semAgenda)}`));
+      const s = data.rooms.find((r) => r.room_id === sala.id);
+      if (!s) return [...problemas, falha('a sala de teste não apareceu na lista')];
+      const d = numDia(data1);
+      const ordem = AULAS.map((a) => `${d}${a}`).filter((c) => sala.slots.includes(c));
+      const veio = (s.agenda ?? []).map((x) => x.slot);
+      if (JSON.stringify(veio) !== JSON.stringify(ordem)) problemas.push(falha(`agenda da sala ${sala.id} em ${data1} (${NOME_DIA[d]}) com ${JSON.stringify(veio)}; esperado a mesma agenda do read_room com room_id: ${JSON.stringify(ordem)}`));
+      const t1 = (s.agenda ?? []).find((x) => x.slot === `${d}T1`);
+      if (t1?.slot_status !== 'indisponivel' || t1?.user !== A.user) problemas.push(falha(`${d}T1 na agenda de rooms: esperado slot_status indisponivel e user ${A.user}; veio ${JSON.stringify(t1)}`));
       return problemas;
     });
     await teste('end_time antes do start_time → 400', async () => {

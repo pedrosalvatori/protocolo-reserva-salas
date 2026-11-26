@@ -210,6 +210,22 @@ Pontos que a planilha v2.0 não resolve e que afetam a conversa entre implementa
 
 ## Versões
 
+### 2.11.0 (`read_room` sem `room_id` lê todas as salas)
+
+Na planilha, a leitura do CRUD tem a chave **opcional**: com a chave lê um registro, sem a chave lê todos. O
+`read_room` exigia `room_id` e respondia 400 sem ele.
+
+- **`room_id` virou opcional** (regra 9.16). Com `room_id`, nada muda. Sem `room_id`, a resposta é `count` +
+  `rooms` com todas as salas, na mesma ordem do `list_rooms`, e nunca 404 — não existe sala para não encontrar.
+- **Com `date` e sem `room_id`, cada sala vem com a sua `agenda`** daquele dia: é o dia inteiro de todas as salas
+  numa requisição só, no lugar de um `read_room` por sala.
+- `room_id` **enviado** fora do formato continua **400**: o 200 com a lista vale só quando a chave não vem.
+- O `list_rooms` não muda. Ele responde "quais salas estão livres neste horário" (o trio `date`+`start_time`+
+  `end_time` e o `available` sim/não); o `read_room` sem `room_id` responde "como está o dia de cada sala".
+
+**Todo servidor precisa mudar:** aceitar o `read_room` sem `room_id`. No cliente não é obrigatório mexer: quem
+sempre manda `room_id` continua valendo.
+
 ### 2.10.0 (troca de sala e de dia na reserva)
 
 A planilha da EP-3 pede, no item (e)/(m), que o usuário comum atualize **sala, dia e faixa de horário** de uma
@@ -339,7 +355,8 @@ isso com dois campos (`days` e `slots`); a 2.8.0 passa a usar o código da UTFPR
 
 - **Agenda da sala.** `read_room` com `date` devolve `agenda`: um item por horário da sala naquele dia da semana
   (ex.: `3T1`), com `slot_status` `"livre"` ou `"indisponivel"` e, nos reservados, quem reservou (`user`). O
-  `reservation_id` só vai para o admin e para o dono da reserva.
+  `reservation_id` só vai para o admin e para o dono da reserva. Sem `room_id` (v2.11), a `agenda` de cada sala
+  vem dentro do seu item de `rooms`.
 - `room_status`: `active` = livre para reservas; `inactive` = indisponível (manutenção, limpeza).
 
 O que cada grupo precisa mudar:
